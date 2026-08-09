@@ -1,0 +1,45 @@
+{
+  "MiniMaxH3IntegrationGH": {
+    "display_name": "MiniMax-H3 Integration(GH)",
+    "inputs": {
+      "clip_name": { "name": "clip_name" },
+      "video_vae_name": { "name": "video_vae_name" },
+      "audio_vae_name": { "name": "audio_vae_name" },
+      "aspect": {
+        "name": "aspect",
+        "options": {
+          "adaptive": "adaptive",
+          "16:9": "16:9",
+          "9:16": "9:16",
+          "4:3": "4:3",
+          "3:4": "3:4",
+          "1:1": "1:1",
+          "21:9": "21:9"
+        }
+      },
+      "megapixels": { "name": "megapixels" },
+      "duration_seconds": { "name": "duration_seconds" }
+    },
+    "outputs": {
+      "0": { "name": ">" }
+    }
+  },
+  "MiniMaxH3IntegrationAdapterGH": {
+    "display_name": "MiniMax-H3 Adapter(GH)",
+    "inputs": {
+      "integration": { "name": "<" }
+    },
+    "outputs": {
+      "0": { "name": "positive" },
+      "1": { "name": "av_latent" },
+      "2": { "name": "video_vae" },
+      "3": { "name": "audio_vae" },
+      "4": { "name": "models number" },
+      "5": { "name": "mux_audio" },
+      "6": { "name": "is_original_audio" },
+      "7": { "name": "conditioned_prompt" },
+      "8": { "name": "media_map_json" },
+      "9": { "name": "report" }
+    }
+  }
+}
