@@ -1,25 +1,4 @@
-# MiniMax H3 ComfyUI 智能一体化（GH）
-<a href="https://github.com/goohai/Goohai-MiniMax-H3_Integration" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/GitHub-MiniMax--H3%20Integration-1E90FF?style=flat-square" alt="GitHub" /></a>
-<a href="https://github.com/goohai/Goohaitools-comfyui" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/GitHub-Goohaitools--comfyui-1E90FF?style=flat-square" alt="Goohaitools-comfyui" /></a>
-<a href="https://space.bilibili.com/1194488958" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/B%E7%AB%99-%E5%AD%A4%E6%B5%B7FOTO-FF69B4?style=flat-square&logo=bilibili" alt="B站 孤海FOTO" /></a>
-
-## 🎬 视频教程
-
-### 👉 <a href="https://space.bilibili.com/1194488958" target="_blank" rel="noopener noreferrer">点击前往 B 站主页观看全部教程</a>
-
-<a href="https://space.bilibili.com/1194488958" target="_blank" rel="noopener noreferrer"><img src="https://img.shields.io/badge/B%E7%AB%99-%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-FF69B4?style=for-the-badge&logo=bilibili" alt="B站视频教程" /></a>
-
----
-
-## 🧩 RunningHub 工作流
-
-### 👉 <a href="https://www.runninghub.cn/user-center/1959241033525714946/webapp?inviteCode=rh-v1557" target="_blank" rel="noopener noreferrer">点击访问我的 RunningHub 个人主页</a>
-
-<a href="https://vibex.runninghub.cn/p/app-5b97e951de8d47aab61ce3e9731f50a9/?inviteCode=rh-v1557" target="_blank" rel="noopener noreferrer"><img src="https://www.runninghub.cn/assets/images/logo.png" alt="RunningHub" height="28" align="middle" /> <span style="display:inline-block;margin-left:8px;font-size:15px;font-weight:600;color:#1E90FF;vertical-align:middle;">RH Vibex主页 · 在线运行AI应用</span></a>
-
----
-
-MiniMax H3 的独立 ComfyUI 一体化集成节点，支持文本生视频、首尾帧、全能参考和音视频混合条件构建。节点会自动识别素材组合、生成官方媒体标签，并把 AV（Audio-Video）混合潜空间交给下游采样/解码节点。
+# MiniMax-H3 Integration(GH)
 
 An independent ComfyUI integration node for MiniMax H3 conditioning.
 
@@ -27,13 +6,13 @@ The diffusion model remains an external input in the downstream sampler. This pa
 
 ## 功能概览
 
-根据上传的素材智能判定任务类型，负责收集图片、视频、音频和提示词，加载 H3 所需的 CLIP/VAE，并输出供后续采样器使用的 AV（Audio-Video）混合潜空间条件，支持原声音轨输出。
+本节点是 MiniMax H3 的智能一体化 ComfyUI 条件构建节点，根据上传的素材智能判定任务类型，负责收集图片、视频、音频和提示词，加载 H3 所需的 CLIP/VAE，并输出供后续采样器使用的 AV（Audio-Video）混合潜空间条件。
 
 扩散模型本身仍由下游采样器执行。本仓库内置了 <a href="https://github.com/T8mars/comfyui-minimax-h3-audio-T8" target="_blank" rel="noopener noreferrer" style="color:#1E90FF">T8</a> 风格的条件构建逻辑。
 
 ## 节点
 
-### `MiniMax-H3 智能一体化(GH)`
+### `MiniMax-H3 Integration(GH)`
 
 主节点，负责：
 
@@ -41,23 +20,19 @@ The diffusion model remains an external input in the downstream sampler. This pa
 - 根据画幅、百万像素和参考素材自动计算输出尺寸；
 - 读取首帧、尾帧、参考图片、参考视频和参考音频；
 - 根据素材组合生成 T2VA、I2VA、L2VA、FL2VA、Ref2VA 或 Hybrid 条件；
-- 所有输出汇集成一条管道，交给配套适配器分流，界面更简洁。
+- 输出私有 `MiniMax` 类型数据，交给配套适配器。
 
-前端支持拖放/上传图片、视频和音频；首尾帧模式与全能参考模式可以分别保存提示词和素材状态，切换模式不会丢失另一模式的内容。
-
-### `MiniMax-H3 适配器(GH)`
+### `MiniMax-H3 Adapter(GH)`
 
 接收主节点的 `MiniMax` 输出，并拆分为下游工作流需要的端口：
 
 - 正面条件（`positive`）；
 - AV 混合潜空间（`av_latent`，同时包含视频和音频潜空间）；
 - 视频 VAE、音频 VAE；
-- 模型序号（自动切换大模型类型）；
+- 模型序号；
 - 混合音频、条件提示词、媒体映射 JSON 和执行报告。
 
-适配器还会输出“原始音频”（内部端口名为 `mux_audio`），可连接到 `VHS_VideoCombine.audio`。
-
-适配器输出的“原始音频”可直接连 `VHS_VideoCombine` 的音频输入，保证原始音质不变。
+适配器输出的“混合音频”是 ComfyUI `AUDIO` 数据对象，不是音频 latent 或条件数据，通常连接到 `VHS_VideoCombine` 的音频输入。模型生成的音频应使用 AV 解码节点输出的 `generated_audio`。
 
 ## 工作模式
 
@@ -97,7 +72,7 @@ The diffusion model remains an external input in the downstream sampler. This pa
 - I2VA、L2VA、Hybrid、Ref2VA：`<Picture 1>`、`<Video 1>`、`<Audio 1>`；
 - FL2VA：`Picture 1`、`Picture 2`。
 
-当“严格提示词标签”开启时，引用不存在的素材编号会停止执行并报错提示：
+当“严格提示词标签”开启时，引用不存在的素材编号会停止执行并提示：
 
 > 当前提示词引用了不存在的素材标签，请引用正确的标签后重试
 
@@ -107,7 +82,7 @@ The diffusion model remains an external input in the downstream sampler. This pa
 
 - **自动生成（`native`）**：不使用驱动音频初始化音频 latent，由模型生成目标音频；
 - **仅参考音频（`reference_only`）**：音频只作为参考条件，模型生成目标音频；
-- **原声输出（`lock_source`）**：将驱动音频写入音频 latent，保持源音频，同时单独输出一份同时长源音质音频；
+- **锁定源音频（`lock_source`）**：将驱动音频写入音频 latent，保持源音频；
 - **重混源音频（`remix_source`）**：以驱动音频为基础重绘，重绘程度由音频重绘强度控制。
 
 没有可用驱动音频时，节点会自动回退为“自动生成”，避免将空音频传入后端。
@@ -115,20 +90,19 @@ The diffusion model remains an external input in the downstream sampler. This pa
 ## 推荐连接
 
 ```text
-MiniMax-H3 智能一体化(GH)
+MiniMax-H3 Integration(GH)
         ↓ MiniMax
-MiniMax-H3 适配器(GH)
+MiniMax-H3 Adapter(GH)
         ├─ positive → BasicGuider / 条件输入
         ├─ av_latent → 采样器 latent_image 或 H3 音频潜空间控制节点
         ├─ video_vae / audio_vae → H3 AV 解码节点
-        └─ 原始音频（mux_audio）→ VHS_VideoCombine.audio
+        └─ generated_audio（来自 AV 解码）→ VHS_VideoCombine.audio
 ```
 
-适配器的 AV 混合潜空间不能直接当作纯视频 latent 使用，应连接到支持 MiniMax H3 AV latent 的采样和解码节点。
 
 ## 限制与注意事项
 
-- 输出宽高会自动限制到 MiniMax H3 的 32 像素对齐要求；
+- 输出宽高必须满足 MiniMax H3 的 32 像素对齐要求；
 - 默认输出时长为 2–15 秒，并按 H3 帧数网格对齐；
 - 全能参考模式最多 9 张图片、3 个视频和 3 个独立音频；
 - 参考视频会按目标时长截取或用最后一帧补齐；
@@ -143,7 +117,7 @@ MiniMax-H3 适配器(GH)
 ComfyUI/custom_nodes/Goohai-MiniMax-H3_Integration/
 ```
 
-重启 ComfyUI 后，在节点菜单中搜索 `MiniMax-H3 智能一体化(GH)` 或 `MiniMax-H3 适配器(GH)`。
+重启 ComfyUI 后，在节点菜单中搜索 `MiniMax-H3 Integration(GH)` 或 `MiniMax-H3 Adapter(GH)`。
 
 ## License
 

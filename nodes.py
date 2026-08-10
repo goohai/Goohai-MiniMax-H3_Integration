@@ -20,6 +20,8 @@ ASPECTS = {
     "adaptive": None,
     "16:9": 16 / 9,
     "9:16": 9 / 16,
+    "3:2": 3 / 2,
+    "2:3": 2 / 3,
     "4:3": 4 / 3,
     "3:4": 3 / 4,
     "1:1": 1.0,
@@ -326,7 +328,7 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                     default=_default_model(folder_paths.get_filename_list("vae"), DEFAULT_AUDIO_VAE),
                 ),
                 io.Combo.Input("aspect", options=list(ASPECTS), default="16:9"),
-                io.Float.Input("megapixels", default=0.5, min=0.2, max=4.0, step=0.1, round=0.1),
+                io.Float.Input("megapixels", default=0.5, min=0.2, max=2.0, step=0.1, round=0.1),
                 io.Int.Input(
                     "duration_seconds",
                     default=5,

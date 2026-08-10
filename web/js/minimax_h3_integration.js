@@ -9,7 +9,7 @@ const MAX_RESTORED_NODE_HEIGHT = INITIAL_NODE_HEIGHT * 1.5;
 const MIN_NODE_HEIGHT = 0;
 const ASPECTS = {
     adaptive: null,
-    "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3,
+    "16:9": 16 / 9, "9:16": 9 / 16, "3:2": 3 / 2, "2:3": 2 / 3, "4:3": 4 / 3,
     "3:4": 3 / 4, "1:1": 1, "21:9": 21 / 9,
 };
 const imageSlots = ["first_frame", "last_frame", ...Array.from({ length: 9 }, (_, i) => `ref_image_${i + 1}`)];
@@ -99,12 +99,14 @@ function aspectDisplayValue(value) {
 }
 
 const ASPECT_INTERNAL_VALUES = [
-    "adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9",
+    "adaptive", "16:9", "9:16", "3:2", "2:3", "4:3", "3:4", "1:1", "21:9",
 ];
 const ASPECT_DISPLAY_VALUES = {
     adaptive: "自适应",
     "16:9": "16:9",
     "9:16": "9:16",
+    "3:2": "3:2",
+    "2:3": "2:3",
     "4:3": "4:3",
     "3:4": "3:4",
     "1:1": "1:1",
@@ -252,7 +254,7 @@ function createPanel(node) {
       .ghh3-box{border:1px solid #334a5d;border-radius:8px;padding:7px;margin:0 0 6px;background:#111c27}.ghh3-title{font-size:12px;color:#edf5fb;margin-bottom:3px}.ghh3-hint{font-size:10px;color:#8697a7;line-height:1.3}
       .ghh3-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}.ghh3-drop{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#08b4ed;cursor:pointer;border:1px dashed #2c5368;border-radius:6px;background:#101b26;padding:4px;box-sizing:border-box}.ghh3-drop:hover{border-color:#0aa4d6;background:#142633}.ghh3-reference-empty{grid-column:1/-1;width:100%;aspect-ratio:5.2/1;align-items:flex-start;justify-content:center;text-align:left;padding:18px 24px}.ghh3-reference-empty .ghh3-drop-icon{font-size:14px;margin:0 7px 0 0}.ghh3-reference-empty .ghh3-drop-title{font-size:12px}.ghh3-reference-empty .ghh3-drop-subtitle{font-size:9px;margin-top:8px}.ghh3-drop-icon{font-size:14px;line-height:1.2;margin:0;color:#08b4ed;font-family:Arial,sans-serif}.ghh3-drop-title{font-size:10px;line-height:1.2;color:#d9e8f2}.ghh3-drop-title-row{display:flex;align-items:center;justify-content:center;gap:5px;line-height:1.2}.ghh3-optional{color:#416d86;font-size:.82em;line-height:1.2;position:relative;top:-1px}.ghh3-audio-drop .ghh3-optional{top:-2px}.ghh3-drop-subtitle{font-size:8px;line-height:1.25;color:#8697a7;margin-top:3px}.ghh3-limit{grid-column:1/-1;color:#d47d8b;font-size:9px;padding:2px 3px 0;text-align:left}
       .ghh3-keygrid{display:grid;grid-template-columns:1fr 1fr;gap:5px}.ghh3-keygrid .ghh3-drop{aspect-ratio:16/9}.ghh3-keygrid .ghh3-audio-card,.ghh3-keygrid .ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:3px}
-      .ghh3-card{min-width:0;aspect-ratio:1;border:1px solid #30485c;border-radius:6px;background:#1a2938;overflow:hidden;position:relative;cursor:pointer}.ghh3-card img,.ghh3-card video{display:block;width:100%;height:100%;object-fit:cover;background:#071018}.ghh3-card:hover img,.ghh3-card:hover video{object-fit:contain}.ghh3-card-name{position:absolute;left:0;right:0;bottom:0;padding:2px 15px 2px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;background:rgba(10,20,30,.6);font-size:7px;line-height:1.15}.ghh3-remove{position:absolute;right:1px;bottom:0;border:0;background:transparent;color:#d3e0ea;cursor:pointer;font-size:11px;z-index:3}.ghh3-play{position:absolute;left:3px;bottom:21px;border:0;background:rgba(0,0,0,.65);color:white;border-radius:50%;width:14px;height:14px;cursor:pointer;z-index:3;font-size:7px;line-height:12px;padding:0}.ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;min-height:34px;aspect-ratio:auto;margin-top:0;font-size:9px}.ghh3-audio-card{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:0}.ghh3-prompt{display:block;width:100%;height:100%;min-height:0;resize:none;overflow:auto;box-sizing:border-box;border:0;border-radius:6px;background:#1d2731;color:#e1e9ef;padding:7px;font:12px Arial,sans-serif;outline:none;user-select:text;scrollbar-width:thin;scrollbar-color:#1f3540 transparent}.ghh3-prompt::placeholder{color:#6f7d89;opacity:1}.ghh3-prompt::-webkit-scrollbar{width:5px}.ghh3-prompt::-webkit-scrollbar-track{background:transparent}.ghh3-prompt::-webkit-scrollbar-thumb{background:#1f3540;border-radius:3px}.ghh3-prompt::-webkit-scrollbar-thumb:hover{background:#294955}.ghh3-advanced{position:absolute;left:0;right:0;top:auto;bottom:0;z-index:50;display:flex;flex-direction:column-reverse;height:auto;min-height:0;margin:0;padding:0 0 2px;box-sizing:border-box;user-select:none;overflow:visible;background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-shadow:none}.ghh3-advanced>summary{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced .ghh3-advanced-body{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced[open]{background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-sizing:border-box;box-shadow:none}.ghh3-size{color:#0db5e8;font-size:12px;padding:2px 0 4px}
+      .ghh3-card{min-width:0;aspect-ratio:1;border:1px solid #30485c;border-radius:6px;background:#1a2938;overflow:hidden;position:relative;cursor:pointer}.ghh3-card img,.ghh3-card video{display:block;width:100%;height:100%;object-fit:cover;background:#071018}.ghh3-card:hover img,.ghh3-card:hover video{object-fit:contain}.ghh3-card-name{position:absolute;left:0;right:0;bottom:0;padding:2px 15px 2px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;background:rgba(10,20,30,.6);font-size:7px;line-height:1.15}.ghh3-remove{position:absolute;right:1px;bottom:0;border:0;background:transparent;color:#d3e0ea;cursor:pointer;font-size:11px;z-index:3}.ghh3-media-controls{position:absolute;left:3px;right:3px;bottom:12px;z-index:4;height:14px;display:flex;align-items:center;color:rgba(255,255,255,.6);font:8px/1 Arial,sans-serif;pointer-events:none}.ghh3-media-toggle{width:14px;height:14px;padding:0;border:0;background:transparent;cursor:pointer;opacity:.6;display:flex;align-items:center;justify-content:center;pointer-events:auto}.ghh3-card:not(.ghh3-audio-card) .ghh3-media-toggle{background:rgba(0,0,0,.65);border-radius:50%}.ghh3-media-toggle svg{display:block;width:10px;height:10px;overflow:visible}.ghh3-media-time{margin-left:auto}.ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;min-height:34px;aspect-ratio:auto;margin-top:0;font-size:9px}.ghh3-audio-card{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:0}.ghh3-prompt{display:block;width:100%;height:100%;min-height:0;resize:none;overflow:auto;box-sizing:border-box;border:0;border-radius:6px;background:#1d2731;color:#e1e9ef;padding:7px 7px calc(7px + 14 * 1.4em);font:12px/1.4 Arial,sans-serif;outline:none;user-select:text;scrollbar-width:thin;scrollbar-color:#1f3540 transparent}.ghh3-prompt::placeholder{color:#6f7d89;opacity:1}.ghh3-prompt::-webkit-scrollbar{width:5px}.ghh3-prompt::-webkit-scrollbar-track{background:transparent}.ghh3-prompt::-webkit-scrollbar-thumb{background:#1f3540;border-radius:3px}.ghh3-prompt::-webkit-scrollbar-thumb:hover{background:#294955}.ghh3-advanced{position:absolute;left:0;right:0;top:auto;bottom:0;z-index:50;display:flex;flex-direction:column-reverse;height:auto;min-height:0;margin:0;padding:0 0 2px;box-sizing:border-box;user-select:none;overflow:visible;background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-shadow:none}.ghh3-advanced>summary{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced .ghh3-advanced-body{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced[open]{background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-sizing:border-box;box-shadow:none}.ghh3-size{color:#0db5e8;font-size:12px;padding:2px 0 4px}
       .ghh3-size{display:flex;justify-content:space-between;align-items:center;color:#0db5e8;font-size:12px;padding:2px 3px 5px}.ghh3-task{white-space:nowrap}.ghh3-dimensions{white-space:nowrap;text-align:right}.ghh3-advanced-row{display:grid;grid-template-columns:minmax(0,1fr) 220px;align-items:center;gap:8px;min-height:30px}.ghh3-advanced-row>label{text-align:left;color:#aebdca}.ghh3-control{width:220px;justify-self:end;box-sizing:border-box;background:#182633;color:#dbe8f1;border:1px solid #354b5d;border-radius:4px;padding:5px}.ghh3-number{width:220px;height:30px;display:grid;grid-template-columns:26px minmax(0,1fr) 26px;align-items:stretch;justify-self:end}.ghh3-number button{border:1px solid #354b5d;background:#182633;color:#c7d8e4;font-size:10px;padding:0;cursor:pointer}.ghh3-number button:first-child{border-radius:4px 0 0 4px}.ghh3-number button:last-child{border-radius:0 4px 4px 0}.ghh3-number input{width:100%;min-width:0;border:1px solid #354b5d;border-left:0;border-right:0;border-radius:0;background:#182633;color:#dbe8f1;padding:5px;box-sizing:border-box}.ghh3-number input::-webkit-inner-spin-button,.ghh3-number input::-webkit-outer-spin-button{appearance:none;margin:0}.ghh3-toggle{position:relative;display:inline-flex;width:38px;height:22px;justify-self:end;cursor:pointer}.ghh3-toggle input{opacity:0;width:0;height:0}.ghh3-toggle span{position:absolute;inset:0;border-radius:12px;background:#39434d;border:1px solid #52616d;transition:.15s}.ghh3-toggle span:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:#c3cbd1;transition:.15s}.ghh3-toggle input:checked+span{background:#0aa4d6;border-color:#0aa4d6}.ghh3-toggle input:checked+span:before{transform:translateX(16px);background:#fff}
       .ghh3-drop-title-row .ghh3-drop-icon{display:inline-flex;align-items:center;justify-content:center;height:1.2em;font-size:10px;line-height:1;margin:0}
       .ghh3-audio-drop .ghh3-drop-icon{font-size:14px;line-height:1;height:1.2em}
@@ -371,7 +373,6 @@ function nodeColorToCss(value) {
     const advancedRows = new Map();
     const addAdvanced = (name, label, control) => { const row = make("div"); row.className = "ghh3-advanced-row"; const labelEl = make("label", {}, label); labelEl.dataset.ghh3Translation = label; row.appendChild(labelEl); row.appendChild(control); advancedBody.appendChild(row); advancedLabels.set(name, labelEl); advancedRows.set(name, row); };
     const localizedSelects = [];
-    let lastLocale = currentLocale();
     const select = (name, values) => {
         const s = document.createElement("select"); s.className = "ghh3-control";
         const syncOptions = () => {
@@ -469,6 +470,14 @@ function nodeColorToCss(value) {
     });
     audioStrengthControl.querySelector("input")?.addEventListener("input", () => { audioStrengthManual = true; });
     driveAudioOrdinalControl.addEventListener("change", () => {
+        if (state.mode === "all_reference" && Number(driveAudioOrdinalControl.value || 0) === 0) {
+            audioModeAutoByMode[state.mode] = true;
+            audioModeByMode[state.mode] = "native";
+            setWidget(node, "audio_mode", "native");
+            const control = advancedRows.get("audio_mode")?.querySelector("select");
+            if (control) control.value = "native";
+            return;
+        }
         if (audioModeAutoByMode[state.mode] !== false) syncAudioModeDefault();
     });
     function applyLocale() {
@@ -482,15 +491,9 @@ function nodeColorToCss(value) {
         updateAdvancedVisibility();
         render();
     }
-    const localeObserver = new MutationObserver(() => applyLocale());
-    localeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["lang", "data-locale", "data-language"] });
+    // Read locale at node initialization. A storage event can still refresh
+    // the UI after a real settings change, but no periodic polling is needed.
     window.addEventListener("storage", applyLocale);
-    const localeTimer = window.setInterval(() => {
-        const locale = currentLocale();
-        if (locale === lastLocale) return;
-        lastLocale = locale;
-        applyLocale();
-    }, 500);
     advanced.addEventListener("toggle", () => { persistState(); });
     root.appendChild(prompt); root.appendChild(advanced);
     prompt.addEventListener("input", () => { promptByMode[state.mode] = prompt.value; setPromptWidget(node, prompt.value); persistState(); });
@@ -838,11 +841,29 @@ function nodeColorToCss(value) {
         }
     }
     let hoverPasteSlot = null;
+    let activeMedia = null;
+    const formatMediaTime = value => String(Math.max(0, Math.floor(Number(value) || 0))).padStart(2, "0");
+    const stopActiveMedia = () => { if (!activeMedia) return; activeMedia.media.pause(); activeMedia.media.currentTime = 0; activeMedia.setPlaying(false); activeMedia = null; };
+    const mediaIcon = playing => playing ? '<svg viewBox="0 0 12 12"><path d="M3 2v8M9 2v8" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.5"/></svg>' : '<svg viewBox="0 0 12 12"><path d="M2.5 1.5 10 6l-7.5 4.5Z" fill="rgba(255,255,255,.6)" stroke="rgba(255,255,255,.6)" stroke-width="1"/></svg>';
     function card(slot, entry, square = true) {
         const item = make("div"); item.className = "ghh3-card"; if (!square) item.style.aspectRatio = "16/9"; if (slot === "hybrid_audio") { item.classList.add("ghh3-audio-card"); item.style.aspectRatio = "auto"; }
+        item.dataset.ghh3DropSlot = slot;
         if (entry.kind === "image") { const img = make("img"); img.src = fileUrl(entry.name); item.appendChild(img); }
         else if (entry.kind === "video") { const video = make("video"); video.src = fileUrl(entry.name); video.muted = !!entry.muted; video.preload = "metadata"; item.appendChild(video); const play = make("button", {}, "▶"); play.className = "ghh3-play"; play.onclick = e => { e.stopPropagation(); video.muted = !!entry.muted; video.paused ? video.play() : video.pause(); }; item.appendChild(play); }
-        else item.appendChild(make("div", { height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#8ea3b4", fontSize: "22px" }, "♫"));
+        else {
+            item.appendChild(make("div", { height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#8ea3b4", fontSize: "22px" }, "♫"));
+            const audio = new Audio(fileUrl(entry.name));
+            const controls = make("div"); controls.className = "ghh3-media-controls";
+            const toggle = make("button"); toggle.className = "ghh3-media-toggle";
+            const time = make("span", {}, "00 s"); time.className = "ghh3-media-time";
+            const setPlaying = playing => { toggle.innerHTML = mediaIcon(playing); };
+            const refresh = () => { const remaining = audio.paused ? audio.duration : Math.max(0, audio.duration - audio.currentTime); time.textContent = `${formatMediaTime(remaining)} s`; };
+            const start = () => { if (activeMedia && activeMedia.media !== audio) stopActiveMedia(); activeMedia = { media: audio, setPlaying }; audio.play().catch(() => {}); setPlaying(true); };
+            setPlaying(false);
+            toggle.onclick = e => { e.stopPropagation(); audio.paused ? start() : stopActiveMedia(); };
+            audio.addEventListener("loadedmetadata", refresh); audio.addEventListener("timeupdate", refresh); audio.addEventListener("ended", () => { refresh(); setPlaying(false); if (activeMedia?.media === audio) activeMedia = null; });
+            controls.append(toggle, time); item.appendChild(controls);
+        }
         if (entry.kind === "video") {
             const sound = make("button", {}, entry.muted ? String.fromCodePoint(0x1F507) : String.fromCodePoint(0x1F50A));
             sound.className = "ghh3-sound";
@@ -850,6 +871,19 @@ function nodeColorToCss(value) {
             sound.title = t(entry.muted ? "Unmute video" : "Mute video");
             sound.onclick = e => { e.stopPropagation(); entry.muted = !entry.muted; persistState(); render(); };
             item.appendChild(sound);
+            const video = item.querySelector("video");
+            const oldPlay = item.querySelector(".ghh3-play");
+            if (oldPlay) oldPlay.style.display = "none";
+            const controls = make("div"); controls.className = "ghh3-media-controls";
+            const toggle = make("button"); toggle.className = "ghh3-media-toggle";
+            const time = make("span", {}, "00 s"); time.className = "ghh3-media-time";
+            const setPlaying = playing => { toggle.innerHTML = mediaIcon(playing); };
+            const refresh = () => { const remaining = video.paused ? video.duration : Math.max(0, video.duration - video.currentTime); time.textContent = `${formatMediaTime(remaining)} s`; };
+            const start = () => { if (activeMedia && activeMedia.media !== video) stopActiveMedia(); activeMedia = { media: video, setPlaying }; video.muted = !!entry.muted; video.play().catch(() => {}); setPlaying(true); };
+            setPlaying(false);
+            toggle.onclick = e => { e.stopPropagation(); video.paused ? start() : stopActiveMedia(); };
+            video.addEventListener("loadedmetadata", refresh); video.addEventListener("timeupdate", refresh); video.addEventListener("ended", () => { refresh(); setPlaying(false); if (activeMedia?.media === video) activeMedia = null; });
+            controls.append(toggle, time); item.appendChild(controls);
         }
         item.appendChild(make("div", {}, `${labelFor(slot, entry.kind)}: ${entry.name}`)).className = "ghh3-card-name";
         const remove = make("button", {}, "×"); remove.className = "ghh3-remove"; remove.onclick = e => { e.stopPropagation(); media.delete(slot); setMediaWidget(node, slot, ""); syncAudioModeAfterMediaChange(slot); persistState(); render(); }; item.appendChild(remove);
@@ -859,8 +893,8 @@ function nodeColorToCss(value) {
         item.ondblclick = e => { if (e.target.closest("button")) return; e.stopPropagation(); clearTimeout(clickTimer); if (entry.kind === "video") insertVideoAudioTag(slot); };
         item.onpointerenter = () => { hoverPasteSlot = slot; };
         item.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = null; };
-        item.ondragover = e => e.preventDefault();
-        item.ondrop = e => { e.preventDefault(); accept(e.dataTransfer.files, slot); };
+        item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
+        item.ondrop = e => { e.preventDefault(); e.stopPropagation(); accept(e.dataTransfer.files, slot); };
         return item;
     }
     function choose(slot) { const input = document.createElement("input"); input.type = "file"; input.multiple = !slot; input.accept = slot === "first_frame" || slot === "last_frame" ? "image/*" : "image/*,video/*,audio/*"; input.onchange = () => accept(input.files, slot); input.click(); }
@@ -873,6 +907,7 @@ function nodeColorToCss(value) {
         else if (slot === "hybrid_audio") { title = t("Reference audio"); subtitle = t("Optional"); icon = "♫"; }
         else if (referenceEmpty) { title = t("Reference media"); subtitle = t("Supports up to 3 videos, 9 images, and 3 audios · Video MP4/MOV (2-15 seconds) · Audio MP3/WAV (2-15 seconds)"); }
         const d = make("div"); d.className = "ghh3-drop"; if (slot === "hybrid_audio") d.classList.add("ghh3-audio-drop"); if (referenceEmpty) d.classList.add("ghh3-reference-empty");
+        d.dataset.ghh3DropSlot = slot || "";
         if (slot === "first_frame" || slot === "last_frame") {
             const row = make("div"); row.className = "ghh3-drop-title-row";
             row.appendChild(make("span", {}, icon)).className = "ghh3-drop-icon";
@@ -893,7 +928,7 @@ function nodeColorToCss(value) {
             d.appendChild(row);
             if (subtitle) d.appendChild(make("div", {}, subtitle)).className = "ghh3-drop-subtitle";
         }
-        d.onclick = () => choose(slot); d.onpointerenter = () => { hoverPasteSlot = slot; }; d.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = null; }; d.ondragover = e => e.preventDefault(); d.ondrop = e => { e.preventDefault(); accept(e.dataTransfer.files, slot); }; return d;
+        d.onclick = () => choose(slot); d.onpointerenter = () => { hoverPasteSlot = slot; }; d.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = null; }; d.ondragover = e => { e.preventDefault(); e.stopPropagation(); }; d.ondrop = e => { e.preventDefault(); e.stopPropagation(); accept(e.dataTransfer.files, slot); }; return d;
     }
     function render() {
         normalizePromptTagFormat();
@@ -954,6 +989,21 @@ function nodeColorToCss(value) {
         persistState();
         render();
     }
+    const captureMaterialDrop = event => {
+        const target = event.target instanceof Element ? event.target : null;
+        const materialArea = target?.closest?.(".ghh3-card, .ghh3-drop, .ghh3-dynamic");
+        if (!materialArea || !root.contains(materialArea)) return;
+        if (!event.dataTransfer?.types?.includes?.("Files")) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.type !== "drop") return;
+        const slotElement = target.closest("[data-ghh3-drop-slot]");
+        const preferredSlot = slotElement?.dataset?.ghh3DropSlot || null;
+        accept(event.dataTransfer.files, preferredSlot);
+    };
+    window.addEventListener("dragenter", captureMaterialDrop, true);
+    window.addEventListener("dragover", captureMaterialDrop, true);
+    window.addEventListener("drop", captureMaterialDrop, true);
     function switchMode(nextMode) {
         promptByMode[state.mode] = prompt.value;
         state.mode = nextMode;
@@ -1069,12 +1119,13 @@ function nodeColorToCss(value) {
     };
     const oldRemoved = node.onRemoved;
     node.onRemoved = function(...args) {
+        window.removeEventListener("dragenter", captureMaterialDrop, true);
+        window.removeEventListener("dragover", captureMaterialDrop, true);
+        window.removeEventListener("drop", captureMaterialDrop, true);
         window.removeEventListener("wheel", capturePromptWheel, true);
         if (middlePan) stopMiddlePan({ type: "blur", preventDefault() {}, stopImmediatePropagation() {} });
         document.removeEventListener("paste", onPaste, true);
-        localeObserver.disconnect();
         window.removeEventListener("storage", applyLocale);
-        window.clearInterval(localeTimer);
         return oldRemoved?.apply(this, args);
     };
     requestAnimationFrame(() => {

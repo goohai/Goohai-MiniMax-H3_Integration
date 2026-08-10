@@ -12,7 +12,6 @@ from comfy.model_base import MiniMaxH3 as MiniMaxH3BaseModel
 from .core import (
     CANVAS_MULTIPLE,
     FPS,
-    REF_IMAGE_SHORT_EDGE,
     adapt_canvas,
     align_frame_count_down,
     empty_av_latent,
@@ -28,6 +27,7 @@ from .prompt_tags import media_map_json, prepare_prompt
 
 
 HYBRID_KEYFRAME_SENTINEL = "t8_keyframe_latent"
+MAX_REFERENCE_IMAGE_PIXELS = 4 * 1024 * 1024
 
 
 def assert_hybrid_layout_contract() -> None:
@@ -108,11 +108,17 @@ def resolve_task_type(task_type: str, first_frame, last_frame, has_refs: bool) -
 def _resize_reference_image(image, width: int, height: int, ref_image_size: str):
     h, w = int(image.shape[1]), int(image.shape[2])
     if ref_image_size == "match":
-        scale = min(1.0, math.sqrt((width * height) / (w * h)))
+        scale = math.sqrt((width * height) / (w * h))
     else:
-        scale = min(1.0, REF_IMAGE_SHORT_EDGE / min(w, h))
+        scale = min(1.0, math.sqrt(MAX_REFERENCE_IMAGE_PIXELS / (w * h)))
     target_width = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
     target_height = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    if ref_image_size == "max" and target_width * target_height > MAX_REFERENCE_IMAGE_PIXELS:
+        correction = math.sqrt(MAX_REFERENCE_IMAGE_PIXELS / (target_width * target_height))
+        target_width = max(CANVAS_MULTIPLE, math.floor(target_width * correction / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+        target_height = max(CANVAS_MULTIPLE, math.floor(target_height * correction / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    # Reference images may keep their own aspect ratios; dimensions are
+    # derived from the selected pixel budget, so no target-ratio crop is used.
     return resize_image(image[:1], target_width, target_height), target_width, target_height
 
 
@@ -146,11 +152,6 @@ def build_conditioning(
 ):
     if width % 32 or height % 32:
         raise ValueError("MiniMax H3 width and height must be divisible by 32")
-    if width * height > 768 * 1344:
-        raise ValueError(
-            "Requested canvas exceeds MiniMax H3's native 768x1344 pixel-area cap; "
-            "reduce width/height to avoid an unvalidated VRAM path"
-        )
     if not 0.0 <= audio_denoise_strength <= 1.0:
         raise ValueError("audio_denoise_strength must be between 0 and 1")
 
