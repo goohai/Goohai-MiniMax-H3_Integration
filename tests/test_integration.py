@@ -87,6 +87,30 @@ def test_reference_video_is_capped_at_fifteen_seconds():
     assert capped[-1, 0, 0, 0].item() == 359
 
 
+def test_sixty_fps_reference_keeps_original_speed_at_twenty_four_fps():
+    frames = torch.arange(300, dtype=torch.float32).reshape(300, 1, 1, 1)
+    sampled = _sample_video_frames(frames, 60, 120)
+    assert sampled.shape[0] == 120
+    assert sampled[0, 0, 0, 0].item() == 0
+    assert sampled[-1, 0, 0, 0].item() == 297
+
+
+def test_aligned_reference_continues_at_source_speed_when_source_is_long_enough():
+    frames = torch.arange(320, dtype=torch.float32).reshape(320, 1, 1, 1)
+    sampled = _sample_video_frames(frames, 60, 124)
+    assert sampled.shape[0] == 124
+    assert sampled[119, 0, 0, 0].item() == 297
+    assert sampled[-1, 0, 0, 0].item() == 307
+
+
+def test_twelve_fps_reference_duplicates_frames_across_timeline():
+    frames = torch.arange(60, dtype=torch.float32).reshape(60, 1, 1, 1)
+    sampled = _sample_video_frames(frames, 12, 120)
+    assert sampled.shape[0] == 120
+    assert sampled[:6, 0, 0, 0].tolist() == [0, 0, 1, 1, 2, 2]
+    assert sampled[-1, 0, 0, 0].item() == 59
+
+
 def test_auto_task_resolution():
     assert resolve_task_type("auto", None, None, False) == "t2va"
     assert resolve_task_type("auto", object(), None, False) == "i2va"

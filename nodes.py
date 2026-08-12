@@ -260,7 +260,12 @@ def _trim_audio_to_duration(audio, duration_seconds):
 
 
 def _sample_video_frames(frames, source_fps, target_frames):
-    """Take the first target window at 24fps, padding short sources at the end."""
+    """Convert the source to 24fps without changing playback speed.
+
+    The caller supplies H3's aligned 17n+5 frame count. Sampling continues at
+    the original playback rate through that full model duration; only a source
+    that actually ends earlier is padded by repeating its final frame.
+    """
     if frames is None or frames.shape[0] <= 1:
         return frames
     source_fps = float(source_fps or 0)
@@ -280,11 +285,13 @@ def _sample_video_frames(frames, source_fps, target_frames):
     else:
         target_frames = requested
     if source_fps <= 0:
-        sampled = frames[:target_frames]
+        source_indices = torch.arange(target_frames, dtype=torch.long)
     else:
+        # Preserve source playback rate: 60fps -> 24fps drops frames at the
+        # 24fps cadence; 12fps -> 24fps repeats source frames at that cadence.
         source_indices = torch.floor(torch.arange(target_frames, dtype=torch.float32) * source_fps / 24).long()
-        source_indices = source_indices.clamp(max=frames.shape[0] - 1)
-        sampled = frames[source_indices]
+    source_indices = source_indices.clamp(max=frames.shape[0] - 1)
+    sampled = frames[source_indices]
     if sampled.shape[0] < target_frames:
         sampled = torch.cat([sampled, sampled[-1:].repeat(target_frames - sampled.shape[0], 1, 1, 1)], dim=0)
     return sampled[:target_frames]
@@ -413,11 +420,19 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         ref_videos, video_audio = {}, {}
         muted_video_slots = _serialized_muted_video_slots(gh_state_json)
         for i, value in enumerate([ref_video_1, ref_video_2, ref_video_3], 1):
+            # Sample at the source playback rate through H3's complete aligned
+            # timeline (e.g. 124 frames / 5.167s for a displayed 5s).
             frames, soundtrack = _load_video_frames(value, calculate_length(duration_seconds))
             if frames is not None:
                 ref_videos[f"ref_video_{i}"] = frames
                 if soundtrack is not None and f"ref_video_{i}" not in muted_video_slots:
-                    video_audio[f"ref_video_audio_{i}"] = soundtrack
+                    # Keep the audio reference on the same target timeline as
+                    # the resampled video, rather than letting a longer source
+                    # soundtrack extend the reference block's temporal span.
+                    effective_duration = calculate_length(duration_seconds) / 24.0
+                    video_audio[f"ref_video_audio_{i}"] = _trim_audio_to_duration(
+                        soundtrack, effective_duration
+                    )
         audios = [_load_audio_file(v) for v in [ref_audio_1, ref_audio_2, ref_audio_3]]
         audios = {f"ref_audio_{i}": v for i, v in enumerate(audios, 1) if v is not None}
         ordered_drive_audios = [
@@ -490,7 +505,8 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         if internal_drive_audio is None:
             audio_mode = "native"
         is_original_audio = audio_mode == "lock_source"
-        final_audio = _trim_audio_to_duration(internal_drive_audio, duration_seconds)
+        effective_duration = length / 24.0
+        final_audio = _trim_audio_to_duration(internal_drive_audio, effective_duration)
 
         result = build_conditioning(
             clip, video_vae, audio_vae, prompt, width, height, length,
