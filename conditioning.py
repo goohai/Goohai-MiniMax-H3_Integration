@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import inspect
 import math
+from pathlib import Path
 
 import torch
 
@@ -28,23 +30,98 @@ from .prompt_tags import media_map_json, prepare_prompt
 
 HYBRID_KEYFRAME_SENTINEL = "t8_keyframe_latent"
 MAX_REFERENCE_IMAGE_PIXELS = 4 * 1024 * 1024
+REFS_OVERWRITE = "refs_overwrite"
+KEYFRAME_REF_CONCAT = "concat"
 
 
-def assert_hybrid_layout_contract() -> None:
-    """Fail loudly if upstream starts packing our sentinel as a real reference.
+def _const_str(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Index):
+        return _const_str(node.value)
+    return None
 
-    Current ComfyUI replaces keyframe cond latents with the ref latent list when
-    both payloads are present. The sentinel makes that latent list start with the
-    keyframes while PackedLayout intentionally ignores its unknown ref kind.
-    """
-    extra_conds_source = inspect.getsource(MiniMaxH3BaseModel.extra_conds)
-    required_contract = 'payload["cond_video_latents"] = [r["latent"] for r in refs if "latent" in r]'
-    if required_contract not in extra_conds_source:
-        raise RuntimeError(
-            "This ComfyUI build changed MiniMax H3 ref/keyframe latent assembly; "
-            "the T8 Hybrid path is disabled until its ordering can be revalidated."
-        )
 
+def _is_payload_cond_video_latents(target) -> bool:
+    return (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "payload"
+        and _const_str(target.slice) == "cond_video_latents"
+    )
+
+
+def _listcomp_iter_name(node):
+    if not isinstance(node, ast.ListComp) or not node.generators:
+        return None
+    iterator = node.generators[0].iter
+    return iterator.id if isinstance(iterator, ast.Name) else None
+
+
+def extra_conds_source_from_file(path) -> str:
+    text = Path(path).read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != "MiniMaxH3":
+            continue
+        for item in node.body:
+            if isinstance(item, ast.FunctionDef) and item.name == "extra_conds":
+                segment = ast.get_source_segment(text, item)
+                if segment:
+                    return segment
+    raise RuntimeError(f"MiniMaxH3.extra_conds was not found in {path}")
+
+
+def classify_cond_video_latents_policy(source: str) -> str:
+    """Classify how MiniMaxH3.extra_conds fills cond_video_latents when both keyframes and refs exist."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return "unknown"
+
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(_is_payload_cond_video_latents(target) for target in node.targets)
+    ]
+    assignments.sort(key=lambda node: (getattr(node, "lineno", 0), getattr(node, "col_offset", 0)))
+
+    last_policy = "unknown"
+    for node in assignments:
+        value = node.value
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            last_policy = KEYFRAME_REF_CONCAT
+            continue
+        iter_name = _listcomp_iter_name(value)
+        if iter_name == "refs":
+            last_policy = REFS_OVERWRITE
+        elif iter_name in {"keyframes", "kf", "keyframe"}:
+            last_policy = "keyframes_only"
+        elif isinstance(value, ast.Name) and value.id in {"refs", "ref_latents"}:
+            last_policy = REFS_OVERWRITE
+    return last_policy
+
+
+def _live_extra_conds_source() -> str | None:
+    try:
+        return inspect.getsource(inspect.unwrap(MiniMaxH3BaseModel.extra_conds))
+    except (OSError, TypeError):
+        return None
+
+
+def _installed_extra_conds_source() -> str | None:
+    try:
+        import comfy.model_base as model_base
+    except Exception:
+        return None
+    try:
+        return extra_conds_source_from_file(inspect.getfile(model_base))
+    except Exception:
+        return None
+
+
+def _assert_sentinel_is_ignored_by_packed_layout() -> None:
     keyframe = {"resolved_frame_index": 0, "latent": torch.zeros(1)}
     baseline = PackedLayout(1, 2, 2, 2, 1, keyframes=[keyframe], frame_count=5)
     hybrid = PackedLayout(
@@ -62,6 +139,34 @@ def assert_hybrid_layout_contract() -> None:
             "This ComfyUI build changed MiniMax H3 PackedLayout reference handling; "
             "the T8 exact-keyframe + reference compatibility path is disabled to prevent corrupt conditioning."
         )
+
+
+def assert_hybrid_layout_contract() -> str:
+    """Return the live Hybrid packing policy, or fail if it cannot be used safely.
+
+    RH / current ComfyUI still overwrites keyframe cond latents with the ref latent
+    list when both payloads are present. The T8 sentinel then restores keyframe
+    tensors in that list while PackedLayout ignores the unknown ref kind.
+
+    The check is semantic (AST of extra_conds), not a brittle source substring, so
+    formatting or comments in ComfyUI no longer disable Hybrid.
+    """
+    sources = [src for src in (_live_extra_conds_source(), _installed_extra_conds_source()) if src]
+    policy = "unknown"
+    for source in sources:
+        policy = classify_cond_video_latents_policy(source)
+        if policy != "unknown":
+            break
+
+    if policy == REFS_OVERWRITE:
+        _assert_sentinel_is_ignored_by_packed_layout()
+        return REFS_OVERWRITE
+    if policy == KEYFRAME_REF_CONCAT:
+        return KEYFRAME_REF_CONCAT
+    raise RuntimeError(
+        "This ComfyUI build changed MiniMax H3 ref/keyframe latent assembly; "
+        "the T8 Hybrid path is disabled until its ordering can be revalidated."
+    )
 
 
 def resolve_task_type(task_type: str, first_frame, last_frame, has_refs: bool) -> str:
@@ -294,12 +399,15 @@ def build_conditioning(
     )
 
     if keyframes and real_ref_blocks:
-        assert_hybrid_layout_contract()
+        hybrid_policy = assert_hybrid_layout_contract()
         ref_items = [{"type": "image", "data": image} for image in keyframe_images] + real_ref_items
-        refs = [
-            {"kind": HYBRID_KEYFRAME_SENTINEL, "latent": keyframe["latent"]}
-            for keyframe in keyframes
-        ] + real_ref_blocks
+        if hybrid_policy == REFS_OVERWRITE:
+            refs = [
+                {"kind": HYBRID_KEYFRAME_SENTINEL, "latent": keyframe["latent"]}
+                for keyframe in keyframes
+            ] + real_ref_blocks
+        else:
+            refs = real_ref_blocks
         tokens = clip.tokenize(conditioned_prompt, minimax_ref_items=ref_items)
     elif real_ref_blocks:
         refs = real_ref_blocks

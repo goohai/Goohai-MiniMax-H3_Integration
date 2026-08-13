@@ -20,7 +20,14 @@ from gh_h3_test.nodes import (  # noqa: E402
     calculate_canvas,
     calculate_length,
 )
-from gh_h3_test.conditioning import HYBRID_KEYFRAME_SENTINEL, resolve_task_type  # noqa: E402
+from gh_h3_test.conditioning import (  # noqa: E402
+    HYBRID_KEYFRAME_SENTINEL,
+    KEYFRAME_REF_CONCAT,
+    REFS_OVERWRITE,
+    classify_cond_video_latents_policy,
+    extra_conds_source_from_file,
+    resolve_task_type,
+)
 from gh_h3_test.prompt_tags import canonicalize_media_tags, prepare_prompt  # noqa: E402
 
 
@@ -109,6 +116,32 @@ def test_twelve_fps_reference_duplicates_frames_across_timeline():
     assert sampled.shape[0] == 120
     assert sampled[:6, 0, 0, 0].tolist() == [0, 0, 1, 1, 2, 2]
     assert sampled[-1, 0, 0, 0].item() == 59
+
+
+def test_cond_video_policy_detects_refs_overwrite_and_concat():
+    overwrite = '''
+def extra_conds(self, **kwargs):
+    if keyframes is not None:
+        payload["cond_video_latents"] = [kf["latent"] for kf in keyframes]
+    if refs is not None:
+        payload["cond_video_latents"] = [r["latent"] for r in refs if "latent" in r]
+'''
+    concat = '''
+def extra_conds(self, **kwargs):
+    payload["cond_video_latents"] = (
+        [kf["latent"] for kf in keyframes] + [r["latent"] for r in refs if "latent" in r]
+    )
+'''
+    assert classify_cond_video_latents_policy(overwrite) == REFS_OVERWRITE
+    assert classify_cond_video_latents_policy(concat) == KEYFRAME_REF_CONCAT
+
+
+def test_rh_comfyui_minimax_extra_conds_still_overwrites_with_refs():
+    model_base = Path("/root/custom_nodes/.RH/ComfyUI/comfy/model_base.py")
+    if not model_base.exists():
+        pytest.skip("RH ComfyUI is not present")
+    source = extra_conds_source_from_file(model_base)
+    assert classify_cond_video_latents_policy(source) == REFS_OVERWRITE
 
 
 def test_auto_task_resolution():
