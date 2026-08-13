@@ -2,6 +2,7 @@ import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
 const NODE = "MiniMaxH3IntegrationGH";
+const RH_NODE_IDS = [NODE, "MiniMaxH3IntegrationAdapterGH"];
 const WIDTH = 500;
 const PANEL_WIDTH = 476;
 const INITIAL_NODE_HEIGHT = Math.round(WIDTH * 2 * 0.9);
@@ -179,12 +180,16 @@ function setWidget(node, name, value) {
     const w = widget(node, name); if (!w) return;
     // Zero is a valid value for integer/float controls such as the optional
     // primary-audio ordinal. Only actual empty values should become (none).
-    w.value = value === null || value === undefined || value === "" ? "(none)" : value;
+    const next = value === null || value === undefined || value === "" ? "(none)" : value;
+    if (w.value === next) return;
+    w.value = next;
     w.callback?.call(w, w.value);
 }
 function setPromptWidget(node, value) {
     const w = widget(node, "prompt"); if (!w) return;
-    w.value = value ?? "";
+    const next = value ?? "";
+    if (w.value === next) return;
+    w.value = next;
     w.callback?.call(w, w.value);
 }
 function cleanPrompt(value) { return value && value !== "(none)" ? value : ""; }
@@ -192,7 +197,9 @@ function setMediaWidget(node, name, value) {
     const w = widget(node, name); if (!w) return;
     // Media slots are optional STRING inputs. Keep unused slots truly empty;
     // the old Combo sentinel "(none)" is not a valid uploaded filename.
-    w.value = value === null || value === undefined || value === "" || value === "(none)" ? "" : value;
+    const next = value === null || value === undefined || value === "" || value === "(none)" ? "" : value;
+    if (w.value === next) return;
+    w.value = next;
     w.callback?.call(w, w.value);
 }
 function normalizeIntWidget(node, name, fallback, minimum, maximum) {
@@ -229,15 +236,23 @@ function kindOf(file) {
     if (file.type?.startsWith("audio/") || /\.(mp3|wav|flac|m4a|ogg|aac)$/i.test(file.name)) return "audio";
     return null;
 }
-function fileUrl(name) { return name && name !== "(none)" ? `/view?filename=${encodeURIComponent(name)}&type=input&subfolder=` : ""; }
+function fileUrl(name) {
+    if (!name || name === "(none)") return "";
+    const parts = String(name).replaceAll("\\", "/").split("/").filter(Boolean);
+    const filename = parts.pop() || "";
+    const params = new URLSearchParams({ filename, type: "input", subfolder: parts.join("/") });
+    return `/view?${params.toString()}`;
+}
 async function uploadFile(file) {
     const body = new FormData(); body.append("image", file, file.name); body.append("type", "input");
     const response = await api.fetchApi("/upload/image", { method: "POST", body });
     if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
-    return (await response.json()).name;
+    const result = await response.json();
+    return [result.subfolder, result.name].filter(Boolean).join("/");
 }
 
 function createPanel(node) {
+    if (typeof node.addDOMWidget !== "function") return false;
     const root = make("div", { position: "relative", width: `${PANEL_WIDTH}px`, maxWidth: "100%", boxSizing: "border-box", color: "#d7e3ef", fontFamily: "Arial,sans-serif", fontSize: "12px", userSelect: "none", padding: "3px 0 2px", overflow: "visible" });
     Object.assign(root.style, {
         display: "grid",
@@ -295,6 +310,7 @@ function createPanel(node) {
     };
     const persistState = () => {
         const value = serializedState();
+        if (node.properties[stateKey] === value && (!stateWidget || stateWidget.value === value)) return;
         node.properties[stateKey] = value;
         if (stateWidget) stateWidget.value = value;
     };
@@ -657,6 +673,7 @@ function nodeColorToCss(value) {
         if (entry.kind === "image") {
             const image = new Image();
             image.onload = () => { if (image.naturalWidth && image.naturalHeight) { adaptiveRatio = image.naturalWidth / image.naturalHeight; refreshSize?.(); } };
+            image.crossOrigin = "anonymous";
             image.src = url;
         } else {
             const video = document.createElement("video");
@@ -668,14 +685,18 @@ function nodeColorToCss(value) {
     setPromptWidget(node, prompt.value);
     let uploadNotice = "";
     function syncMediaWidgets() {
-        for (const name of mediaSlots) setMediaWidget(node, name, media.get(name)?.name || "");
+        for (const name of mediaSlots) {
+            const w = widget(node, name);
+            if (!w) continue;
+            const next = media.get(name)?.name || "";
+            if (w.value !== next) w.value = next;
+        }
     }
     if (stateWidget) {
         stateWidget.serialize = true;
         stateWidget.options = stateWidget.options || {};
         stateWidget.options.serialize = true;
         stateWidget.serializeValue = () => {
-            syncMediaWidgets();
             persistState();
             return stateWidget.value;
         };
@@ -1107,7 +1128,6 @@ function nodeColorToCss(value) {
     const oldSerialize = node.onSerialize;
     node.onSerialize = function(...args) {
         sanitizeHiddenInputs(this);
-        syncMediaWidgets();
         persistState();
         const result = oldSerialize?.apply(this, args);
         const serializedNode = args[0];
@@ -1119,6 +1139,7 @@ function nodeColorToCss(value) {
     };
     const oldRemoved = node.onRemoved;
     node.onRemoved = function(...args) {
+        stopActiveMedia();
         window.removeEventListener("dragenter", captureMaterialDrop, true);
         window.removeEventListener("dragover", captureMaterialDrop, true);
         window.removeEventListener("drop", captureMaterialDrop, true);
@@ -1142,18 +1163,35 @@ function nodeColorToCss(value) {
         if (node.size?.[0] !== WIDTH || node.size?.[1] !== userHeight) node.setSize([WIDTH, userHeight]);
         syncLayout(userHeight, true);
     });
+    return true;
 }
 
-app.registerExtension({ name: "goohai.minimax_h3_integration", async beforeRegisterNodeDef(nodeType, nodeData) {
+app.registerExtension({
+    name: "goohai.minimax_h3_integration",
+    rh: {
+        type: "nodes",
+        nodes: RH_NODE_IDS,
+    },
+    async setup() {
+        if (typeof app.ensureNodesRegistered !== "function") return;
+        await app.ensureNodesRegistered(new Set(RH_NODE_IDS));
+    },
+    async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name === "MiniMaxH3IntegrationAdapterGH") {
         const previousAdapter = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function() {
-            previousAdapter?.apply(this, arguments);
+            const result = previousAdapter?.apply(this, arguments);
             this.size = [320, Math.max(120, this.size?.[1] || 120)];
+            return result;
         };
         return;
     }
     if (nodeData.name !== NODE) return;
     const previous = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function() { previous?.apply(this, arguments); if (!this._ghH3PanelReady) { this._ghH3PanelReady = true; createPanel(this); } };
-} });
+    nodeType.prototype.onNodeCreated = function() {
+        const result = previous?.apply(this, arguments);
+        if (!this._ghH3PanelReady && createPanel(this)) this._ghH3PanelReady = true;
+        return result;
+    };
+    },
+});
