@@ -12,6 +12,14 @@ from comfy_api.latest._input_impl import VideoFromFile
 from comfy_extras import nodes_audio
 
 from .conditioning import build_conditioning
+from .audio_ops import decode_av_latent
+from .sampling import (
+    DEFAULT_SAMPLER_NAME,
+    DEFAULT_SCHEDULER_NAME,
+    SAMPLER_OPTIONS,
+    SCHEDULER_OPTIONS,
+    setup_dual_clock_sampling_gh,
+)
 
 
 NODE_CATEGORY = "Goohai/MiniMax H3 Integration"
@@ -203,6 +211,33 @@ def _serialized_muted_video_slots(gh_state_json):
     }
 
 
+def _serialized_audio_trim_ranges(gh_state_json):
+    """Return saved non-destructive audio selections keyed by media slot."""
+    if not gh_state_json or gh_state_json == "(none)":
+        return {}
+    try:
+        state = json.loads(gh_state_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    media = state.get("media", []) if isinstance(state, dict) else []
+    ranges = {}
+    for item in media:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        slot, entry = item
+        if not isinstance(slot, str) or not isinstance(entry, dict) or entry.get("kind") != "audio":
+            continue
+        try:
+            start = max(0.0, float(entry.get("trimStart", 0) or 0))
+            raw_end = entry.get("trimEnd")
+            end = float(raw_end) if raw_end is not None else None
+        except (TypeError, ValueError):
+            continue
+        if end is not None and end > start:
+            ranges[slot] = (start, end)
+    return ranges
+
+
 def _default_model(options, preferred):
     return preferred if preferred in options else (options[0] if options else None)
 
@@ -257,6 +292,18 @@ def _trim_audio_to_duration(audio, duration_seconds):
     if trimmed.shape[-1] < sample_count:
         trimmed = torch.nn.functional.pad(trimmed, (0, sample_count - trimmed.shape[-1]))
     return {"waveform": trimmed, "sample_rate": sample_rate}
+
+
+def _apply_audio_selection(audio, selection):
+    """Slice an AUDIO value by a saved UI range without changing its rate."""
+    if audio is None or not selection:
+        return audio
+    waveform = audio["waveform"]
+    sample_rate = int(audio["sample_rate"])
+    start_seconds, end_seconds = selection
+    start_sample = max(0, min(waveform.shape[-1], round(float(start_seconds) * sample_rate)))
+    end_sample = max(start_sample + 1, min(waveform.shape[-1], round(float(end_seconds) * sample_rate)))
+    return {"waveform": waveform[..., start_sample:end_sample], "sample_rate": sample_rate}
 
 
 def _sample_video_frames(frames, source_fps, target_frames):
@@ -334,13 +381,13 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                     options=folder_paths.get_filename_list("vae"),
                     default=_default_model(folder_paths.get_filename_list("vae"), DEFAULT_AUDIO_VAE),
                 ),
-                io.Combo.Input("aspect", options=list(ASPECTS), default="16:9"),
+                io.Combo.Input("aspect", options=list(ASPECTS), default="adaptive"),
                 io.Float.Input("megapixels", default=0.5, min=0.2, max=2.0, step=0.1, round=0.1),
                 io.Int.Input(
                     "duration_seconds",
                     default=5,
                     min=2,
-                    max=15,
+                    max=30,
                     step=1,
                 ),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True, default="", extra_dict={"hidden": True}),
@@ -372,6 +419,15 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                 # Keep this last so adding persistence does not shift legacy
                 # widgets_values positions for any existing input.
                 io.String.Input("gh_state_json", default="", optional=True, extra_dict={"hidden": True}),
+                # Keep new inputs after every legacy widget so old workflow
+                # widget-value positions remain unchanged.
+                io.String.Input(
+                    "prompt_override",
+                    display_name="Prompt",
+                    optional=True,
+                    force_input=True,
+                    tooltip="Optional upstream prompt; overrides the local prompt editor when connected",
+                ),
             ],
             # A private socket type keeps the adapter as the only compatible
             # expansion node when dragging from this output.
@@ -385,7 +441,7 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                 ref_video_1, ref_video_2, ref_video_3, ref_audio_1, ref_audio_2, ref_audio_3,
                 task_type, audio_mode, audio_denoise_strength,
                 drive_audio_ordinal, strict_prompt_tags, ref_image_size,
-                gh_state_json=""):
+                gh_state_json="", prompt_override=None):
         # ComfyUI can replay an older hidden-widget snapshot as the literal
         # string "(none)". T8 treats this control as an int, with 0 disabling
         # remapping, so normalize it before calling the shared conditioning.
@@ -401,6 +457,8 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         main_mode, prompt, media_values = _restore_ui_state(
             gh_state_json, main_mode, prompt, media_values
         )
+        if prompt_override is not None:
+            prompt = str(prompt_override)
         first_frame = media_values["first_frame"]
         last_frame = media_values["last_frame"]
         hybrid_audio = media_values["hybrid_audio"]
@@ -409,9 +467,17 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         ref_image_7, ref_image_8, ref_image_9 = (media_values[f"ref_image_{i}"] for i in range(7, 10))
         ref_video_1, ref_video_2, ref_video_3 = (media_values[f"ref_video_{i}"] for i in range(1, 4))
         ref_audio_1, ref_audio_2, ref_audio_3 = (media_values[f"ref_audio_{i}"] for i in range(1, 4))
+        audio_trim_ranges = _serialized_audio_trim_ranges(gh_state_json)
         first = _load_image_file(first_frame)
         last = _load_image_file(last_frame)
-        hybrid = _load_audio_file(hybrid_audio)
+        hybrid = _apply_audio_selection(
+            _load_audio_file(hybrid_audio), audio_trim_ranges.get("hybrid_audio")
+        )
+        # Hybrid uses the same H3-aligned timeline for the mux track, target
+        # audio latent, and reference-audio condition. This prevents a longer
+        # source file from giving the reference condition a different clock.
+        effective_duration = calculate_length(duration_seconds) / 24.0
+        hybrid = _trim_audio_to_duration(hybrid, effective_duration)
         # The dedicated Hybrid upload is the GH equivalent of T8's first
         # autogrow ref_audio input. Keep it as a reference and also provide it
         # as the internal drive track so Hybrid works without an <Audio N> tag.
@@ -433,7 +499,15 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                     video_audio[f"ref_video_audio_{i}"] = _trim_audio_to_duration(
                         soundtrack, effective_duration
                     )
-        audios = [_load_audio_file(v) for v in [ref_audio_1, ref_audio_2, ref_audio_3]]
+        audios = [
+            _trim_audio_to_duration(
+                _apply_audio_selection(
+                    _load_audio_file(value), audio_trim_ranges.get(f"ref_audio_{index}")
+                ),
+                effective_duration,
+            )
+            for index, value in enumerate([ref_audio_1, ref_audio_2, ref_audio_3], 1)
+        ]
         audios = {f"ref_audio_{i}": v for i, v in enumerate(audios, 1) if v is not None}
         ordered_drive_audios = [
             video_audio[f"ref_video_audio_{i}"]
@@ -553,9 +627,106 @@ class MiniMaxH3IntegrationAdapterGH(io.ComfyNode):
         )
 
 
+class MiniMaxH3DualClockT8GH(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3DualClockT8GH",
+            display_name="MiniMax H3 Dual Clock - T8 (GH)",
+            description=(
+                "Independent MiniMax H3 dual-clock sampler with clean locked-audio "
+                "compatibility for current ComfyUI. Based on the T8 dual-clock design."
+            ),
+            category=NODE_CATEGORY,
+            inputs=[
+                io.Model.Input("model"),
+                io.Latent.Input("av_latent"),
+                io.Int.Input("steps", default=4, min=1, max=1000),
+                io.Float.Input(
+                    "shift_video", default=12.0, min=0.01, max=100.0, step=0.01, advanced=True
+                ),
+                io.Float.Input(
+                    "shift_audio", default=3.0, min=0.01, max=100.0, step=0.01, advanced=True
+                ),
+                io.Combo.Input(
+                    "sampler_name",
+                    options=SAMPLER_OPTIONS,
+                    default=DEFAULT_SAMPLER_NAME,
+                    optional=True,
+                ),
+                io.Combo.Input(
+                    "scheduler",
+                    options=SCHEDULER_OPTIONS,
+                    default=DEFAULT_SCHEDULER_NAME,
+                    optional=True,
+                ),
+            ],
+            outputs=[
+                io.Model.Output("model"),
+                io.Sampler.Output("sampler"),
+                io.Sigmas.Output("sigmas"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        model,
+        av_latent,
+        steps,
+        shift_video,
+        shift_audio,
+        sampler_name=DEFAULT_SAMPLER_NAME,
+        scheduler=DEFAULT_SCHEDULER_NAME,
+    ):
+        return io.NodeOutput(*setup_dual_clock_sampling_gh(
+            model,
+            av_latent,
+            steps,
+            shift_video,
+            shift_audio,
+            sampler_name,
+            scheduler,
+        ))
+
+
+class MiniMaxH3AVDecodeT8GH(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3AVDecodeT8GH",
+            display_name="MiniMax H3 AV Decode - T8 (GH)",
+            description=(
+                "Independent MiniMax H3 joint video/audio latent decoder. "
+                "Interface follows the original T8 AV Decode design."
+            ),
+            category=NODE_CATEGORY,
+            inputs=[
+                io.Latent.Input("av_latent"),
+                io.Vae.Input("video_vae"),
+                io.Vae.Input("audio_vae"),
+            ],
+            outputs=[
+                io.Image.Output("frames"),
+                io.Audio.Output("generated_audio"),
+                io.Latent.Output("video_latent"),
+                io.Latent.Output("audio_latent"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, av_latent, video_vae, audio_vae):
+        return io.NodeOutput(*decode_av_latent(av_latent, video_vae, audio_vae))
+
+
 class MiniMaxH3IntegrationExtension(ComfyExtension):
     async def get_node_list(self):
-        return [MiniMaxH3IntegrationGH, MiniMaxH3IntegrationAdapterGH]
+        return [
+            MiniMaxH3IntegrationGH,
+            MiniMaxH3IntegrationAdapterGH,
+            MiniMaxH3DualClockT8GH,
+            MiniMaxH3AVDecodeT8GH,
+        ]
 
 
 def comfy_entrypoint():

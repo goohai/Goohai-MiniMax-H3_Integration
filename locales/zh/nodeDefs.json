@@ -20,20 +20,17 @@
         }
       },
       "megapixels": { "name": "百万像素" },
+      "prompt_override": { "name": "提示词" },
       "duration_seconds": { "name": "时长（秒）" }
     },
-    "outputs": {
-      "0": { "name": ">" }
-    }
+    "outputs": { "0": { "name": ">" } }
   },
   "MiniMaxH3IntegrationAdapterGH": {
     "display_name": "MiniMax-H3 适配器(GH)",
-    "inputs": {
-      "integration": { "name": "<" }
-    },
+    "inputs": { "integration": { "name": "<" } },
     "outputs": {
       "0": { "name": "正面条件" },
-      "1": { "name": "AV潜空间" },
+      "1": { "name": "音视频潜空间" },
       "2": { "name": "视频 VAE" },
       "3": { "name": "音频 VAE" },
       "4": { "name": "模型序号" },
@@ -42,6 +39,37 @@
       "7": { "name": "条件提示词" },
       "8": { "name": "媒体映射 JSON" },
       "9": { "name": "报告" }
+    }
+  },
+  "MiniMaxH3DualClockT8GH": {
+    "display_name": "MiniMax-H3 双时钟-T8(GH)",
+    "inputs": {
+      "model": { "name": "模型" },
+      "av_latent": { "name": "音视频潜空间" },
+      "steps": { "name": "步数" },
+      "shift_video": { "name": "视频偏移" },
+      "shift_audio": { "name": "音频偏移" },
+      "sampler_name": { "name": "采样器" },
+      "scheduler": { "name": "调度器" }
+    },
+    "outputs": {
+      "0": { "name": "模型" },
+      "1": { "name": "采样器" },
+      "2": { "name": "Sigmas" }
+    }
+  },
+  "MiniMaxH3AVDecodeT8GH": {
+    "display_name": "MiniMax-H3解码-T8(GH)",
+    "inputs": {
+      "av_latent": { "name": "音视频潜空间" },
+      "video_vae": { "name": "视频 VAE" },
+      "audio_vae": { "name": "音频 VAE" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "生成音频" },
+      "2": { "name": "视频潜空间" },
+      "3": { "name": "音频潜空间" }
     }
   }
 }

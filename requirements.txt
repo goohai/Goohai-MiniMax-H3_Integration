@@ -1,0 +1,6 @@
+transformers>=4.49
+accelerate
+safetensors
+sentencepiece
+Pillow
+imageio-ffmpeg>=0.6.0

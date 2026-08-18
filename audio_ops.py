@@ -1,14 +1,89 @@
 from __future__ import annotations
 
+import gc
 import json
 
 import torch
 import torch.nn.functional as torch_functional
 import torchaudio
 
+from comfy import model_management
 from comfy_extras.nodes_audio import vae_decode_audio
 
 from .core import encode_audio_once, nested_av_parts, replace_audio_latent, validate_audio
+
+
+def clean_generated_audio_start(audio: dict) -> dict:
+    """Suppress a short H3 start burst only when a silence gap precedes sustained audio."""
+    waveform, sample_rate = validate_audio(audio, "decoded_audio")
+    analysis_samples = min(waveform.shape[-1], round(sample_rate * 0.75))
+    window_samples = max(1, round(sample_rate * 0.01))
+    window_count = analysis_samples // window_samples
+    if window_count < 20:
+        return audio
+
+    analysis = waveform[..., : window_count * window_samples]
+    mono = analysis.float().pow(2).mean(dim=(0, 1)).reshape(window_count, window_samples)
+    rms = mono.mean(dim=1).sqrt()
+    peak = float(rms.max().item())
+    if peak < 0.01:
+        return audio
+
+    active_threshold = max(0.008, peak * 0.12)
+    silence_threshold = max(0.0025, peak * 0.045)
+    active = rms >= active_threshold
+    quiet = rms <= silence_threshold
+
+    initial_limit = min(window_count, 5)  # the burst must begin within 50 ms
+    initial_indices = torch.nonzero(active[:initial_limit], as_tuple=False).flatten()
+    if initial_indices.numel() == 0:
+        return audio
+    burst_start = int(initial_indices[0].item())
+
+    # Require at least 40 ms of near-silence after a short burst, which rules
+    # out ordinary speech or music that simply begins at time zero.
+    quiet_run = 4
+    burst_end = None
+    burst_end_limit = min(window_count - quiet_run, 25)
+    for index in range(burst_start + 2, burst_end_limit + 1):
+        if bool(quiet[index : index + quiet_run].all().item()):
+            burst_end = index
+            break
+    if burst_end is None or int(active[burst_start:burst_end].sum().item()) < 2:
+        return audio
+
+    # Find a later, sustained main signal: at least 6 active windows in an
+    # 80-ms interval, beginning after a meaningful silence gap.
+    sustained_windows = 8
+    main_onset = None
+    search_start = burst_end + 6
+    search_end = min(window_count - sustained_windows, 65)
+    for index in range(search_start, search_end + 1):
+        if int(active[index : index + sustained_windows].sum().item()) >= 6:
+            main_onset = index
+            break
+    if main_onset is None:
+        return audio
+
+    gap = quiet[burst_end:main_onset]
+    if gap.numel() < 6 or float(gap.float().mean().item()) < 0.6:
+        return audio
+
+    silence_end_sample = min(waveform.shape[-1], burst_end * window_samples)
+    fade_end_sample = min(waveform.shape[-1], main_onset * window_samples)
+    if fade_end_sample <= silence_end_sample:
+        return audio
+
+    cleaned = waveform.clone()
+    cleaned[..., :silence_end_sample] = 0
+    fade_length = fade_end_sample - silence_end_sample
+    phase = torch.linspace(
+        0.0, torch.pi / 2, fade_length,
+        device=cleaned.device, dtype=cleaned.dtype,
+    )
+    fade = torch.sin(phase).square()
+    cleaned[..., silence_end_sample:fade_end_sample] *= fade
+    return {**audio, "waveform": cleaned}
 
 
 def inject_audio_latent(av_latent: dict, source_audio: dict, audio_vae, mode: str, strength: float):
@@ -23,21 +98,29 @@ def inject_audio_latent(av_latent: dict, source_audio: dict, audio_vae, mode: st
 
 
 def decode_av_latent(av_latent: dict, video_vae, audio_vae):
-    video, audio = nested_av_parts(av_latent)
-    images = video_vae.decode(video)
-    if images.ndim == 5:
-        images = images.reshape(-1, *images.shape[-3:])
-    decoded_audio = vae_decode_audio(audio_vae, {"samples": audio})
-    video_latent = {key: value for key, value in av_latent.items() if key not in {"samples", "noise_mask"}}
-    audio_latent = video_latent.copy()
-    video_latent["samples"] = video
-    audio_latent["samples"] = audio
-    masks = av_latent.get("noise_mask")
-    if getattr(masks, "is_nested", False):
-        video_mask, audio_mask = masks.unbind()
-        video_latent["noise_mask"] = video_mask
-        audio_latent["noise_mask"] = audio_mask
-    return images, decoded_audio, video_latent, audio_latent
+    try:
+        video, audio = nested_av_parts(av_latent)
+        images = video_vae.decode(video)
+        if images.ndim == 5:
+            images = images.reshape(-1, *images.shape[-3:])
+        decoded_audio = vae_decode_audio(audio_vae, {"samples": audio})
+        if av_latent.get("gh_h3_audio_mode") in {"native", "reference_only"}:
+            decoded_audio = clean_generated_audio_start(decoded_audio)
+        video_latent = {key: value for key, value in av_latent.items() if key not in {"samples", "noise_mask"}}
+        audio_latent = video_latent.copy()
+        video_latent["samples"] = video
+        audio_latent["samples"] = audio
+        masks = av_latent.get("noise_mask")
+        if getattr(masks, "is_nested", False):
+            video_mask, audio_mask = masks.unbind()
+            video_latent["noise_mask"] = video_mask
+            audio_latent["noise_mask"] = audio_mask
+        return images, decoded_audio, video_latent, audio_latent
+    finally:
+        # Release temporary decode allocations without unloading VAE models or
+        # invalidating tensors that are returned to downstream nodes.
+        gc.collect()
+        model_management.soft_empty_cache()
 
 
 def _resample(waveform: torch.Tensor, source_rate: int, target_rate: int) -> torch.Tensor:

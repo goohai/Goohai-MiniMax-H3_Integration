@@ -284,6 +284,7 @@ def build_conditioning(
         add_source_as_reference = False
 
     latent, frame_count = empty_av_latent(width, height, length)
+    latent["gh_h3_audio_mode"] = mode
     _, template_audio = nested_av_parts(latent)
 
     keyframes = []
@@ -397,7 +398,6 @@ def build_conditioning(
         strict=strict_prompt_tags,
         task_type=resolved_task,
     )
-
     if keyframes and real_ref_blocks:
         hybrid_policy = assert_hybrid_layout_contract()
         ref_items = [{"type": "image", "data": image} for image in keyframe_images] + real_ref_items

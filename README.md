@@ -19,7 +19,7 @@
 
 ---
 
-MiniMax H3 的独立 ComfyUI 一体化集成节点，支持文本生视频、首尾帧、全能参考和音视频混合条件构建。节点会自动识别素材组合、生成官方媒体标签，并把 AV（Audio-Video）混合潜空间交给下游采样/解码节点。
+MiniMax H3 的独立 ComfyUI 一体化集成节点，支持文本生视频、首尾帧、全能参考和音视频混合条件构建。节点会自动识别素材组合、生成官方媒体标签，自动优化提示词，支持本地模型优化与在线API优化。
 
 An independent ComfyUI integration node for MiniMax H3 conditioning.
 
@@ -125,25 +125,99 @@ MiniMax-H3 适配器(GH)
         └─ 模型序号（models munber）→ int整数，全能参考时输出1，非全能参考输出0
 ```
 
+## 新增功能
+
+### 提示词输入与富文本显示
+
+- 增加可选的上游提示词输入；连接后自动以上游文本为准，并禁用节点内部提示词编辑框，断开后恢复编辑；
+- 首尾帧模式和全能参考模式分别持久化提示词、优化前原文及编辑状态，刷新浏览器或分享工作流后仍可恢复；
+- 提示词框会在图片、视频和音频标签旁显示对应的图片缩略图、视频首帧或音频图标，素材上传、替换、删除及标签编号变化时同步更新；
+- 支持 `picture 1`、`image1`、`图像1`、`视频1`、`音频1` 等中英文素材标签及对应尖括号格式；
+- H3 标签使用代码块样式显示，支持 `<Subject 1>`、`[Shot 1]`、`[场景1]`、`<d>`、`[Chinese]` 等标签；
+- `subject_definitions:`、`summary:`、`retention_analysis:`、`detailed_description:`、`overall_soundscape:` 等官方段落标题会以独立颜色显示，对话正文也会高亮，后台仍保存原始纯文本；
+
+### H3 提示词优化
+
+- 提示词框内置提示词优化按钮，可读取当前提示词及参考素材，按照 MiniMax H3 官方结构生成视频提示词；
+- 支持 RunningHub（推荐）、OpenAI Chat Completions、OpenAI Responses、Gemini GenerateContent 及兼容协议的自定义 API；
+- RunningHub 模式可直接选择云端模型，输入企业API Key即可使用；参考图片最多上传前 8 张，参考视频会按目标时长处理后作为低帧率视觉参考上传；
+- 支持本地 Transformers 视觉语言模型，以及带视觉投影模型的 GGUF 模型；本地模型统一从 `ComfyUI/models/llm` 目录读取；
+- GGUF 主模型会自动匹配名称最接近的 `mmproj` 视觉模型；存在多个候选版本时可选择使用的版本，并会显示依赖环境检测结果；
+- 支持中文或英文输出、视觉素材读取开关，以及运行工作流前自动优化；自动优化最长等待 200 秒，失败或超时后使用原始提示词继续执行；
+- 相同提示词、素材和配置会复用上一次优化结果，避免重复请求；支持取消正在进行的优化、恢复优化前原文，并在优化完成后播放提示音；
+- 本地优化前会释放 ComfyUI 已加载的其他模型，优化完成后立即卸载本地语言模型，减少显存占用；工作流执行期间禁用本地模型优化，在线 API 优化不受限制。
+
+### 音频裁剪与时间对齐
+
+- 音频素材增加波形裁剪界面，只保存选区起止时间，不修改或复制原始音频文件；
+- 支持拖动起止边界、整体移动选区、滚轮缩放时间轴、中键平移视图、选区播放和实时播放位置线；
+- 可一键将选区同步到视频目标时长；再次打开裁剪界面时会恢复上一次保存的选区；
+- 工作流执行时按保存的起止时间读取音频，超出目标时长自动裁剪，不足目标时长补静音；节点中的时长显示和播放范围同步使用裁剪后的选区；
+- Hybrid 模式中的参考音频、写入 latent 的目标音频及原声输出音频使用同一条 H3 对齐时间线，避免参考条件与视频时长不一致；
+- 解码输出可自动识别开头短促异常波形后紧接静音的情况，仅在符合特征时静音异常片段并对后续音频淡入，减少 H3 偶发的开头破音。
+
+### 独立采样与解码节点
+
+#### `MiniMax-H3 双时钟-T8(GH)`
+
+基于 T8 双时钟设计实现的独立 H3 音视频采样配置节点，不依赖安装 T8 节点包。主要解决0.32.0以上版本comfyui口型对不上或报错问题。
+
+#### `MiniMax-H3解码-T8(GH)`
+
+独立的 H3 音视频潜空间解码节点，不依赖安装 T8 节点包。主要解决性能开销与开头破音的问题。
+
 
 ## 限制与注意事项
 
 - 输出宽高会自动限制到 MiniMax H3 的 32 像素对齐要求；
-- 默认输出时长为 2–15 秒，并按 H3 帧数网格对齐；
+- 默认输出时长为 2–30 秒，并按 H3 帧数网格对齐；
 - 全能参考模式最多 9 张图片、3 个视频和 3 个独立音频；
 - 参考视频会按目标时长截取或用最后一帧补齐；
-- 当前节点只使用 ComfyUI 内置的图片、音频和视频读取路径，不需要额外 Python 依赖；
+- 图片、音频和视频处理优先使用 ComfyUI 环境及 `requirements.txt` 中安装的依赖，不要求用户另外安装系统级 FFmpeg；
 - `node --check`、Python 编译检查和单元测试只能验证代码层面，不能替代实际模型采样和浏览器交互测试。
 
 ## 安装
 
-将本目录放入：
+将本节点克隆到custom_nodes：
 
-```text
-ComfyUI/custom_nodes/Goohai-MiniMax-H3_Integration/
+```bash
+cd ComfyUI/custom_nodes/
+git clone https://github.com/goohai/Goohai-MiniMax-H3_Integration.git
 ```
 
-无需要安装依赖，重启 ComfyUI 后，在节点菜单中搜索 `MiniMax-H3 智能一体化(GH)` ，输出端拉出连线自动连接 `MiniMax-H3 适配器(GH)`。
+然后使用 ComfyUI 自己的 Python 环境安装依赖：
+
+```bash
+python -m pip install -r ComfyUI/custom_nodes/Goohai-MiniMax-H3_Integration/requirements.txt
+```
+
+秋叶整合包等 Windows 便携版可在 ComfyUI 根目录执行：
+
+```powershell
+..\python\python.exe -m pip install -r .\custom_nodes\Goohai-MiniMax-H3_Integration\requirements.txt
+```
+
+`requirements.txt` 包含本地 Transformers 视觉模型和视频预处理所需的依赖。`imageio-ffmpeg` 会提供可随 Python 环境使用的 FFmpeg，通常不需要用户另外安装系统版 FFmpeg。
+
+GGUF 本地提示词优化属于可选功能，还需要安装支持当前 Python、操作系统及 CUDA 环境的 `llama-cpp-python`。预编译依赖可从以下地址下载：
+
+- <a href="https://github.com/JamePeng/llama-cpp-python/releases" target="_blank" rel="noopener noreferrer">llama-cpp-python 预编译 CUDA Wheels</a>
+
+选择 `.whl` 文件时，需要同时匹配：
+
+- 操作系统及架构，例如 Windows 64 位对应 `win_amd64`；
+- ComfyUI 使用的 Python 版本，例如 Python 3.13 对应 `cp313`；
+- 当前 PyTorch 使用的 CUDA 版本，例如 CUDA 13.0 对应 `cu130`。
+
+节点会在选择 GGUF 模型时自动检测以上环境，并在配置页面优先显示匹配的 wheel 文件名和下载链接。用户可直接按节点给出的链接安装；如果没有找到完全匹配的预编译版本，再前往发布页面手动选择。不使用 GGUF 时无需安装该依赖。
+
+下载后请使用 ComfyUI 自己的 Python 环境安装 wheel，例如：
+
+```powershell
+..\python\python.exe -m pip install "下载的llama_cpp_python文件.whl"
+```
+
+完成后重启 ComfyUI，在节点菜单中搜索 `MiniMax-H3 智能一体化(GH)`，输出端拉出连线可自动连接 `MiniMax-H3 适配器(GH)`。
 
 ## License
 

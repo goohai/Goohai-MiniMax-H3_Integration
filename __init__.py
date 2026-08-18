@@ -1,5 +1,10 @@
 if __package__:
-    from .nodes import comfy_entrypoint
+    from . import prompt_optimizer as _prompt_optimizer
+    from .nodes import comfy_entrypoint as _nodes_entrypoint
+
+    def comfy_entrypoint():
+        _prompt_optimizer.register_prompt_optimizer_routes()
+        return _nodes_entrypoint()
 else:
     import importlib.util
     import sys
