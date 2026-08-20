@@ -77,6 +77,7 @@ _ROUTES_REGISTERED = False
 _ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
 _ACTIVE_CANCEL_EVENTS: dict[str, threading.Event] = {}
 _ACTIVE_RH_TASKS: dict[str, tuple[str, str]] = {}
+_ASYNC_OPTIMIZER_JOBS: dict[str, asyncio.Task] = {}
 _GGUF_LOCK = threading.RLock()
 _GGUF_MODEL = None
 _GGUF_HANDLER = None
@@ -199,6 +200,21 @@ def _scan_visual_models() -> list[dict]:
             "mmproj_candidates": [candidate.relative_to(root).as_posix() for candidate in candidates],
         })
     return result
+
+
+def _scan_mmproj_models() -> list[dict]:
+    root = _llm_root()
+    if not root.is_dir():
+        return []
+    return [
+        {
+            "name": path.name,
+            "path": str(path),
+            "relative_path": path.relative_to(root).as_posix(),
+        }
+        for path in sorted(root.rglob("*.gguf"), key=lambda item: str(item).lower())
+        if _is_mmproj(path)
+    ]
 
 
 def _find_visual_model(selected: str) -> dict | None:
@@ -413,8 +429,9 @@ def _selected_mmproj(config: dict, model: dict) -> Path:
     candidates = list(model.get("mmproj_candidates") or [])
     selected = str(config.get("local_mmproj") or "").strip()
     if selected:
-        if selected not in candidates:
-            raise ValueError("已选择的mmproj与当前GGUF模型不匹配，请重新选择")
+        available = {item["relative_path"] for item in _scan_mmproj_models()}
+        if selected not in available:
+            raise ValueError("已选择的mmproj视觉模型不存在，请重新选择")
         path = (_llm_root() / selected).resolve()
         if not path.is_file() or _llm_root().resolve() not in path.parents:
             raise ValueError("已选择的mmproj文件不存在")
@@ -1391,6 +1408,7 @@ async def _request_async(config: dict, payload: dict) -> str:
 async def get_prompt_optimizer_config(_request):
     config = _public_config(DEFAULT_CONFIG)
     config["models"] = _scan_visual_models()
+    config["mmproj_models"] = _scan_mmproj_models()
     config["missing_dependencies"] = _local_missing_dependencies()
     config["gguf_dependency"] = _gguf_dependency_status()
     return web.json_response(config)
@@ -1405,6 +1423,7 @@ def _local_missing_dependencies() -> list[str]:
 async def list_prompt_optimizer_models(_request):
     return web.json_response({
         "models": _scan_visual_models(),
+        "mmproj_models": _scan_mmproj_models(),
         "missing_dependencies": _local_missing_dependencies(),
         "gguf_dependency": _gguf_dependency_status(),
     })
@@ -1422,50 +1441,62 @@ async def save_prompt_optimizer_config(request):
     return web.json_response(_public_config(_normalize_config(await request.json())))
 
 
+def _prepare_prompt_optimization(payload: dict) -> tuple[dict, threading.Event]:
+    node_config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+    config = _normalize_config(node_config)
+    if config.get("mode") == "local":
+        model_path = _local_model_path(config)
+        if model_path.suffix.lower() == ".gguf":
+            _selected_mmproj(config, _selected_local_model(config))
+        elif _local_missing_dependencies():
+            raise RuntimeError("本地视觉模型依赖缺失: " + ", ".join(_local_missing_dependencies()))
+    elif not config.get("api_url") or not config.get("model") or not config.get("api_key"):
+        raise ValueError("请先配置提示词优化 API")
+    cancel_event = threading.Event()
+    payload["_cancel_event"] = cancel_event
+    return config, cancel_event
+
+
+async def _run_prompt_optimization(config: dict, payload: dict) -> str:
+    result = await _request_async(config, payload)
+    if not result:
+        raise RuntimeError("API 返回了空提示词")
+    formatted = _format_prompt_sections(_strip_filenames(result))
+    formatted = _ensure_fl2va_picture_labels(
+        formatted,
+        str(payload.get("task") or "T2VA"),
+        float(payload.get("duration") or 5),
+        str(config.get("output_language") or "English"),
+    )
+    formatted = _ensure_supplied_dialogues(
+        formatted,
+        str(payload.get("prompt") or ""),
+        str(config.get("output_language") or "English"),
+    )
+    return _normalize_subject_shorthand(formatted)
+
+
+def _register_optimizer_task(request_id: str, task: asyncio.Task, cancel_event: threading.Event) -> None:
+    previous_cancel_event = _ACTIVE_CANCEL_EVENTS.pop(request_id, None)
+    if previous_cancel_event is not None:
+        previous_cancel_event.set()
+    previous = _ACTIVE_REQUESTS.pop(request_id, None)
+    if previous is not None:
+        previous.cancel()
+    _ACTIVE_CANCEL_EVENTS[request_id] = cancel_event
+    _ACTIVE_REQUESTS[request_id] = task
+
+
 async def optimize_prompt(request):
     request_id = ""
     try:
         payload = await request.json()
         request_id = str(payload.get("request_id") or "")
-        cancel_event = threading.Event()
-        payload["_cancel_event"] = cancel_event
+        config, cancel_event = _prepare_prompt_optimization(payload)
+        task = asyncio.create_task(_run_prompt_optimization(config, payload))
         if request_id:
-            previous_cancel_event = _ACTIVE_CANCEL_EVENTS.pop(request_id, None)
-            if previous_cancel_event is not None:
-                previous_cancel_event.set()
-            _ACTIVE_CANCEL_EVENTS[request_id] = cancel_event
-        node_config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
-        config = _normalize_config(node_config)
-        if config.get("mode") == "local":
-            model_path = _local_model_path(config)
-            if model_path.suffix.lower() == ".gguf":
-                _selected_mmproj(config, _selected_local_model(config))
-            elif _local_missing_dependencies():
-                raise RuntimeError("本地视觉模型依赖缺失: " + ", ".join(_local_missing_dependencies()))
-        elif not config.get("api_url") or not config.get("model") or not config.get("api_key"):
-            raise ValueError("请先配置提示词优化 API")
-        task = asyncio.create_task(_request_async(config, payload))
-        if request_id:
-            previous = _ACTIVE_REQUESTS.pop(request_id, None)
-            if previous is not None:
-                previous.cancel()
-            _ACTIVE_REQUESTS[request_id] = task
-        result = await task
-        if not result:
-            raise RuntimeError("API 返回了空提示词")
-        formatted = _format_prompt_sections(_strip_filenames(result))
-        formatted = _ensure_fl2va_picture_labels(
-            formatted,
-            str(payload.get("task") or "T2VA"),
-            float(payload.get("duration") or 5),
-            str(config.get("output_language") or "English"),
-        )
-        formatted = _ensure_supplied_dialogues(
-            formatted,
-            str(payload.get("prompt") or ""),
-            str(config.get("output_language") or "English"),
-        )
-        formatted = _normalize_subject_shorthand(formatted)
+            _register_optimizer_task(request_id, task, cancel_event)
+        formatted = await task
         return web.json_response({"prompt": formatted})
     except asyncio.CancelledError:
         return web.json_response({"error": "提示词优化已取消"}, status=499)
@@ -1477,22 +1508,62 @@ async def optimize_prompt(request):
             _ACTIVE_CANCEL_EVENTS.pop(request_id, None)
 
 
+async def start_prompt_optimization(request):
+    """Start a long optimization without holding a hosted reverse-proxy request open."""
+    try:
+        payload = await request.json()
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            raise ValueError("提示词优化请求缺少 request_id")
+        config, cancel_event = _prepare_prompt_optimization(payload)
+        task = asyncio.create_task(_run_prompt_optimization(config, payload))
+        old_job = _ASYNC_OPTIMIZER_JOBS.pop(request_id, None)
+        if old_job is not None:
+            old_job.cancel()
+        _ASYNC_OPTIMIZER_JOBS[request_id] = task
+        _register_optimizer_task(request_id, task, cancel_event)
+        return web.json_response({"request_id": request_id, "status": "running"}, status=202)
+    except Exception as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+
+async def prompt_optimization_status(request):
+    request_id = str(request.query.get("request_id") or "")
+    task = _ASYNC_OPTIMIZER_JOBS.get(request_id)
+    if task is None:
+        return web.json_response({"error": "找不到提示词优化任务"}, status=404)
+    if not task.done():
+        return web.json_response({"status": "running"})
+    _ASYNC_OPTIMIZER_JOBS.pop(request_id, None)
+    _ACTIVE_REQUESTS.pop(request_id, None)
+    _ACTIVE_CANCEL_EVENTS.pop(request_id, None)
+    try:
+        return web.json_response({"status": "success", "prompt": task.result()})
+    except asyncio.CancelledError:
+        return web.json_response({"error": "提示词优化已取消"}, status=499)
+    except Exception as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+
 async def cancel_prompt_optimization(request):
     payload = await request.json()
     request_id = str(payload.get("request_id") or "")
     task = _ACTIVE_REQUESTS.pop(request_id, None)
+    async_job = _ASYNC_OPTIMIZER_JOBS.pop(request_id, None)
     cancel_event = _ACTIVE_CANCEL_EVENTS.pop(request_id, None)
     if cancel_event is not None:
         cancel_event.set()
     if task is not None:
         task.cancel()
+    if async_job is not None and async_job is not task:
+        async_job.cancel()
     runninghub_task = _ACTIVE_RH_TASKS.pop(request_id, None)
     if runninghub_task is not None:
         try:
             await _runninghub_cancel(*runninghub_task)
         except Exception:
             pass
-    return web.json_response({"cancelled": task is not None or cancel_event is not None or runninghub_task is not None})
+    return web.json_response({"cancelled": task is not None or async_job is not None or cancel_event is not None or runninghub_task is not None})
 
 
 def register_prompt_optimizer_routes() -> bool:
@@ -1508,6 +1579,8 @@ def register_prompt_optimizer_routes() -> bool:
     routes.get("/goohai/minimax-h3/prompt-optimizer/runninghub-models")(refresh_runninghub_models)
     routes.post("/goohai/minimax-h3/prompt-optimizer/config")(save_prompt_optimizer_config)
     routes.post("/goohai/minimax-h3/prompt-optimizer/optimize")(optimize_prompt)
+    routes.post("/goohai/minimax-h3/prompt-optimizer/start")(start_prompt_optimization)
+    routes.get("/goohai/minimax-h3/prompt-optimizer/status")(prompt_optimization_status)
     routes.post("/goohai/minimax-h3/prompt-optimizer/cancel")(cancel_prompt_optimization)
     _ROUTES_REGISTERED = True
     return True

@@ -14,7 +14,6 @@ from comfy.model_base import MiniMaxH3 as MiniMaxH3BaseModel
 from .core import (
     CANVAS_MULTIPLE,
     FPS,
-    adapt_canvas,
     align_frame_count_down,
     empty_av_latent,
     encode_audio_once,
@@ -30,6 +29,8 @@ from .prompt_tags import media_map_json, prepare_prompt
 
 HYBRID_KEYFRAME_SENTINEL = "t8_keyframe_latent"
 MAX_REFERENCE_IMAGE_PIXELS = 4 * 1024 * 1024
+MIN_REFERENCE_VIDEO_PIXELS = 300_000
+MAX_REFERENCE_VIDEO_PIXELS = 1_600_000
 REFS_OVERWRITE = "refs_overwrite"
 KEYFRAME_REF_CONCAT = "concat"
 
@@ -210,21 +211,43 @@ def resolve_task_type(task_type: str, first_frame, last_frame, has_refs: bool) -
     return requested
 
 
+REFERENCE_SIZE_SCALES = {"match": 1.0, "1.2x": 1.2, "1.5x": 1.5, "2x": 2.0}
+
+
+def _reference_pixel_budget(width: int, height: int, mode: str, *, video: bool) -> int:
+    maximum = MAX_REFERENCE_VIDEO_PIXELS if video else MAX_REFERENCE_IMAGE_PIXELS
+    if mode == "max":
+        return maximum
+    desired = width * height * REFERENCE_SIZE_SCALES.get(mode, 1.0)
+    if video:
+        desired = max(MIN_REFERENCE_VIDEO_PIXELS, desired)
+    return min(maximum, round(desired))
+
+
+def _resize_reference_media(media, desired_pixels: int):
+    h, w = int(media.shape[1]), int(media.shape[2])
+    source_pixels = w * h
+    # Reference media is never enlarged. When it is already below the chosen
+    # budget, retain its pixel scale and only crop the sub-32 edge remainder.
+    scale = min(1.0, math.sqrt(desired_pixels / source_pixels))
+    scaled_width = max(CANVAS_MULTIPLE, round(w * scale))
+    scaled_height = max(CANVAS_MULTIPLE, round(h * scale))
+    target_width = max(CANVAS_MULTIPLE, math.floor(scaled_width / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    target_height = max(CANVAS_MULTIPLE, math.floor(scaled_height / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    resized = resize_image(media, scaled_width, scaled_height)
+    left = max(0, (scaled_width - target_width) // 2)
+    top = max(0, (scaled_height - target_height) // 2)
+    return resized[:, top:top + target_height, left:left + target_width], target_width, target_height
+
+
 def _resize_reference_image(image, width: int, height: int, ref_image_size: str):
-    h, w = int(image.shape[1]), int(image.shape[2])
-    if ref_image_size == "match":
-        scale = math.sqrt((width * height) / (w * h))
-    else:
-        scale = min(1.0, math.sqrt(MAX_REFERENCE_IMAGE_PIXELS / (w * h)))
-    target_width = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-    target_height = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-    if ref_image_size == "max" and target_width * target_height > MAX_REFERENCE_IMAGE_PIXELS:
-        correction = math.sqrt(MAX_REFERENCE_IMAGE_PIXELS / (target_width * target_height))
-        target_width = max(CANVAS_MULTIPLE, math.floor(target_width * correction / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-        target_height = max(CANVAS_MULTIPLE, math.floor(target_height * correction / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-    # Reference images may keep their own aspect ratios; dimensions are
-    # derived from the selected pixel budget, so no target-ratio crop is used.
-    return resize_image(image[:1], target_width, target_height), target_width, target_height
+    budget = _reference_pixel_budget(width, height, ref_image_size, video=False)
+    return _resize_reference_media(image[:1], budget)
+
+
+def _resize_reference_video(frames, width: int, height: int, ref_image_size: str):
+    budget = _reference_pixel_budget(width, height, ref_image_size, video=True)
+    return _resize_reference_media(frames, budget)
 
 
 def _encode_reference_audio(audio_vae, audio: dict):
@@ -323,16 +346,12 @@ def build_conditioning(
     for index, (video_ordinal, frames) in enumerate(ref_video_entries, 1):
         if frames.ndim != 4 or frames.shape[0] < 5:
             raise ValueError(f"ref_video_{index} must contain at least 5 IMAGE frames")
-        source_height, source_width = int(frames.shape[1]), int(frames.shape[2])
-        canvas_width, canvas_height = adapt_canvas(source_width, source_height)
-        if source_width * source_height < canvas_width * canvas_height:
-            canvas_width = max(CANVAS_MULTIPLE, round(source_width / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-            canvas_height = max(CANVAS_MULTIPLE, round(source_height / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
-        frames = resize_image(frames, canvas_width, canvas_height)
-        # Reference videos follow the requested output window. Shorter videos
-        # are padded with their final frame; longer videos are clipped.
-        if frames.shape[0] < frame_count:
-            frames = torch.cat([frames, frames[-1:].repeat(frame_count - frames.shape[0], 1, 1, 1)], dim=0)
+        frames, canvas_width, canvas_height = _resize_reference_video(
+            frames, width, height, ref_image_size
+        )
+        # Match the official H3 behavior: clip references that exceed the
+        # generated-video window, but never extend a short reference by
+        # repeating its final frame.
         frames = frames[:frame_count]
         aligned_count = align_frame_count_down(int(frames.shape[0]))
         if aligned_count < 5:

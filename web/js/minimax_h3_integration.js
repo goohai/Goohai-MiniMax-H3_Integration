@@ -10,6 +10,7 @@ const RH_NODE_IDS = [
     "MiniMaxH3DualClockT8GH",
     "MiniMaxH3AVDecodeT8GH",
 ];
+const OPTIMIZER_ROUTE = "/goohai/minimax-h3/prompt-optimizer";
 const WIDTH = 500;
 const PANEL_WIDTH = 476;
 const INITIAL_NODE_HEIGHT = Math.round(WIDTH * 2 * 0.9);
@@ -59,6 +60,110 @@ function installAutoOptimizerQueueHook() {
     autoOptimizerQueueInstalled = true;
 }
 
+const livePromptEditors = new Set();
+let promptKeyShieldInstalled = false;
+
+function promptEditorFromEvent(event) {
+    const path = event?.composedPath?.() || [];
+    for (const item of path) {
+        if (item?.classList?.contains?.("ghh3-prompt") && livePromptEditors.has(item)) return item;
+    }
+    const active = document.activeElement;
+    if (active && livePromptEditors.has(active)) return active;
+    const closest = active?.closest?.(".ghh3-prompt");
+    if (closest && livePromptEditors.has(closest)) return closest;
+    // If focus intentionally moved to another form control (for example by
+    // Tab), do not pull it back into the prompt. The RH workaround is only
+    // needed when the canvas/body stole focus from an active prompt editor.
+    if (active && active !== document.body && active !== document.documentElement) {
+        const editable = active.matches?.("input,textarea,select,button,[contenteditable='true']")
+            || active.closest?.("input,textarea,select,button,[contenteditable='true']");
+        if (editable) return null;
+    }
+    for (const editor of livePromptEditors) {
+        if (editor.dataset.ghh3Editing === "1") return editor;
+    }
+    return null;
+}
+
+function markPromptEditor(editor, editing) {
+    if (!editor) return;
+    if (editing) editor.dataset.ghh3Editing = "1";
+    else delete editor.dataset.ghh3Editing;
+}
+
+function applyStolenPromptKey(editor, event) {
+    if (!editor || editor.contentEditable === "false" || event.isComposing) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (typeof editor.setRangeText !== "function") return;
+    const start = editor.selectionStart ?? 0;
+    const end = editor.selectionEnd ?? start;
+    if (event.key === "Backspace") {
+        editor.setRangeText("", start === end ? Math.max(0, start - 1) : start, end, "end");
+    } else if (event.key === "Delete") {
+        editor.setRangeText("", start, start === end ? end + 1 : end, "end");
+    } else if (event.key === "Enter") {
+        editor.setRangeText("\n", start, end, "end");
+    } else if (event.key.length === 1) {
+        editor.setRangeText(event.key, start, end, "end");
+    } else {
+        return;
+    }
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function patchLiteGraphPromptProcessKey() {
+    const proto = globalThis.LGraphCanvas?.prototype;
+    if (!proto || proto.__ghh3PromptKeyPatched || typeof proto.processKey !== "function") return;
+    proto.__ghh3PromptKeyPatched = true;
+    const original = proto.processKey;
+    proto.processKey = function processKeyGhh3PromptShield(event) {
+        if (promptEditorFromEvent(event)) return;
+        return original.apply(this, arguments);
+    };
+}
+
+function installPromptKeyShield() {
+    patchLiteGraphPromptProcessKey();
+    if (promptKeyShieldInstalled || typeof window === "undefined") return;
+    promptKeyShieldInstalled = true;
+    const swallowStolenFocusKeys = event => {
+        const editor = promptEditorFromEvent(event);
+        if (!editor) return;
+        const onEditor = event.target === editor || editor.contains(event.target);
+        if (onEditor) return;
+        // RH binds Backspace to ClearWorkflow and only ignores INPUT/TEXTAREA,
+        // not contenteditable. If the canvas stole focus after a rebuild, keep
+        // those shortcuts off and put the keystroke back into the prompt.
+        if (editor.contentEditable !== "false") editor.focus({ preventScroll: true });
+        const key = String(event.key || "").toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === "z" || key === "y")) return;
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        if (event.type === "keydown") applyStolenPromptKey(editor, event);
+    };
+    window.addEventListener("keydown", swallowStolenFocusKeys, true);
+    window.addEventListener("keyup", swallowStolenFocusKeys, true);
+    document.addEventListener("pointerdown", event => {
+        const path = event.composedPath?.() || [];
+        for (const editor of livePromptEditors) {
+            markPromptEditor(editor, path.includes(editor) || editor.contains(event.target));
+        }
+    }, true);
+}
+
+function registerPromptEditor(editor) {
+    if (!editor) return;
+    livePromptEditors.add(editor);
+    installPromptKeyShield();
+}
+
+function unregisterPromptEditor(editor) {
+    if (!editor) return;
+    livePromptEditors.delete(editor);
+    delete editor.dataset.ghh3Editing;
+}
+
 const DOM_TRANSLATIONS = {
     "Audio": "音频",
     "First and last frames": "首尾帧",
@@ -74,10 +179,13 @@ const DOM_TRANSLATIONS = {
     "Audio denoise strength": "音频去噪强度",
     "Source audio as reference": "源音频作为参考",
     "Strict prompt tags": "严格提示词标签",
-    "Reference image size": "参考图尺寸",
+    "Reference image size": "参考素材尺寸",
     "Reference video policy": "参考视频策略",
     "Force FPS": "强制帧率",
     "match": "匹配",
+    "1.2x": "1.2倍",
+    "1.5x": "1.5倍",
+    "2x": "2倍",
     "max": "最大值",
     "First frame": "首帧",
     "Last frame": "尾帧",
@@ -107,7 +215,8 @@ const DOM_TRANSLATIONS = {
     "Search local models": "搜索本地模型", "Search models": "搜索模型", "No matching models": "没有匹配的模型",
     "Automatic optimization before run": "运行前自动优化提示词", "No compatible local vision models found": "未找到可用的本地视觉模型",
     "Missing local model dependencies": "缺少本地模型依赖",
-    "Choose vision projector": "选择视觉投影模型",
+    "Choose vision projector": "选择视觉投影模型", "Vision model (mmproj)": "视觉模型（mmproj）",
+    "No mmproj models found": "未找到mmproj视觉模型",
     "Multiple matching mmproj files were found. Choose one:": "检测到多个匹配的mmproj文件，请选择一个：",
     "GGUF dependency unavailable": "GGUF运行依赖不可用",
     "Download matching dependency": "下载匹配依赖",
@@ -314,7 +423,8 @@ function fileUrl(name) {
     const parts = String(name).replaceAll("\\", "/").split("/").filter(Boolean);
     const filename = parts.pop() || "";
     const params = new URLSearchParams({ filename, type: "input", subfolder: parts.join("/") });
-    return `/view?${params.toString()}`;
+    const path = `/view?${params.toString()}`;
+    return typeof api.apiURL === "function" ? api.apiURL(path) : path;
 }
 async function uploadFile(file) {
     const body = new FormData(); body.append("image", file, file.name); body.append("type", "input");
@@ -347,7 +457,7 @@ function createPanel(node) {
       .ghh3-box{border:1px solid #334a5d;border-radius:8px;padding:7px;margin:0 0 6px;background:#111c27}.ghh3-title{font-size:12px;color:#edf5fb;margin-bottom:3px}.ghh3-hint{font-size:10px;color:#8697a7;line-height:1.3}
       .ghh3-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}.ghh3-drop{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#08b4ed;cursor:pointer;border:1px dashed #2c5368;border-radius:6px;background:#101b26;padding:4px;box-sizing:border-box}.ghh3-drop:hover{border-color:#0aa4d6;background:#142633}.ghh3-reference-empty{grid-column:1/-1;width:100%;aspect-ratio:5.2/1;align-items:flex-start;justify-content:center;text-align:left;padding:18px 24px}.ghh3-reference-empty .ghh3-drop-icon{font-size:14px;margin:0 7px 0 0}.ghh3-reference-empty .ghh3-drop-title{font-size:12px}.ghh3-reference-empty .ghh3-drop-subtitle{font-size:9px;margin-top:8px}.ghh3-drop-icon{font-size:14px;line-height:1.2;margin:0;color:#08b4ed;font-family:Arial,sans-serif}.ghh3-drop-title{font-size:10px;line-height:1.2;color:#d9e8f2}.ghh3-drop-title-row{display:flex;align-items:center;justify-content:center;gap:5px;line-height:1.2}.ghh3-optional{color:#416d86;font-size:.82em;line-height:1.2;position:relative;top:-1px}.ghh3-audio-drop .ghh3-optional{top:-2px}.ghh3-drop-subtitle{font-size:8px;line-height:1.25;color:#8697a7;margin-top:3px}.ghh3-limit{grid-column:1/-1;color:#d47d8b;font-size:9px;padding:2px 3px 0;text-align:left}
       .ghh3-keygrid{display:grid;grid-template-columns:1fr 1fr;gap:5px}.ghh3-keygrid .ghh3-drop{aspect-ratio:16/9}.ghh3-keygrid .ghh3-drop:not(.ghh3-audio-drop) .ghh3-drop-subtitle{font-size:7px;color:#667887}.ghh3-keygrid .ghh3-audio-card,.ghh3-keygrid .ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:3px}
-      .ghh3-card{min-width:0;aspect-ratio:1;border:1px solid #30485c;border-radius:6px;background:#1a2938;overflow:hidden;position:relative;cursor:pointer}.ghh3-card img,.ghh3-card video{display:block;width:100%;height:100%;object-fit:cover;background:#071018}.ghh3-card:hover img,.ghh3-card:hover video{object-fit:contain}.ghh3-card-name{position:absolute;left:0;right:0;bottom:0;padding:2px 15px 2px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;background:rgba(10,20,30,.6);font-size:7px;line-height:1.15}.ghh3-remove{position:absolute;right:1px;bottom:0;border:0;background:transparent;color:#d3e0ea;cursor:pointer;font-size:11px;z-index:3}.ghh3-media-controls{position:absolute;left:3px;right:3px;bottom:12px;z-index:4;height:14px;display:flex;align-items:center;color:rgba(255,255,255,.6);font:8px/1 Arial,sans-serif;pointer-events:none}.ghh3-media-toggle{width:14px;height:14px;padding:0;border:0;background:rgba(34,52,65,.52)!important;border-radius:50%;cursor:pointer;opacity:1;display:flex;align-items:center;justify-content:center;pointer-events:auto}.ghh3-media-toggle svg{display:block;width:10px;height:10px;overflow:visible}.ghh3-media-time{margin-left:auto}.ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;min-height:34px;aspect-ratio:auto;margin-top:0;font-size:9px}.ghh3-audio-card{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:0}.ghh3-prompt{display:block;width:100%;height:100%;min-height:0;resize:none;overflow:auto;box-sizing:border-box;border:0;border-radius:6px;background:#1d2731;color:#e1e9ef;padding:7px 7px calc(7px + 14 * 1.4em);font:12px/1.4 Arial,sans-serif;outline:none;user-select:text;scrollbar-width:thin;scrollbar-color:#1f3540 transparent}.ghh3-prompt::placeholder{color:#52616d;opacity:1}.ghh3-prompt::-webkit-scrollbar{width:5px}.ghh3-prompt::-webkit-scrollbar-track{background:transparent}.ghh3-prompt::-webkit-scrollbar-thumb{background:#1f3540;border-radius:3px}.ghh3-prompt::-webkit-scrollbar-thumb:hover{background:#294955}.ghh3-advanced{position:absolute;left:0;right:0;top:auto;bottom:0;z-index:50;display:flex;flex-direction:column-reverse;height:auto;min-height:0;margin:0;padding:0 0 2px;box-sizing:border-box;user-select:none;overflow:visible;background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-shadow:none}.ghh3-advanced>summary{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced .ghh3-advanced-body{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced[open]{background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-sizing:border-box;box-shadow:none}.ghh3-size{color:#0db5e8;font-size:12px;padding:2px 0 4px}
+      .ghh3-card{min-width:0;aspect-ratio:1;border:1px solid #30485c;border-radius:6px;background:#1a2938;overflow:hidden;position:relative;cursor:pointer;touch-action:none}.ghh3-card.ghh3-reorder-source{opacity:.68;cursor:grabbing}.ghh3-card.ghh3-reorder-target{border-color:#18bdd3;box-shadow:0 0 0 2px rgba(24,189,211,.48) inset}.ghh3-reorder-indicator{display:none;position:absolute;left:50%;top:50%;z-index:8;transform:translate(-50%,-50%);width:24px;height:24px;border-radius:50%;align-items:center;justify-content:center;background:rgba(11,27,35,.72);color:#d8f4f6;font:18px/24px Arial,sans-serif;pointer-events:none;box-shadow:0 0 0 1px rgba(117,209,218,.6)}.ghh3-card.ghh3-reorder-source .ghh3-reorder-indicator{display:flex}.ghh3-card img,.ghh3-card video{display:block;width:100%;height:100%;object-fit:cover;background:#071018}.ghh3-card:hover img,.ghh3-card:hover video{object-fit:contain}.ghh3-card-name{position:absolute;left:0;right:0;bottom:0;padding:2px 15px 2px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;background:rgba(10,20,30,.6);font-size:7px;line-height:1.15}.ghh3-remove{position:absolute;right:1px;bottom:0;border:0;background:transparent;color:#d3e0ea;cursor:pointer;font-size:11px;z-index:3}.ghh3-media-controls{position:absolute;left:3px;right:3px;bottom:12px;z-index:4;height:14px;display:flex;align-items:center;color:rgba(255,255,255,.6);font:8px/1 Arial,sans-serif;pointer-events:none}.ghh3-media-toggle{width:14px;height:14px;padding:0;border:0;background:rgba(34,52,65,.52)!important;border-radius:50%;cursor:pointer;opacity:1;display:flex;align-items:center;justify-content:center;pointer-events:auto}.ghh3-media-toggle svg{display:block;width:10px;height:10px;overflow:visible}.ghh3-media-time{margin-left:auto}.ghh3-audio-drop{grid-column:1/-1;width:100%;height:34px;min-height:34px;aspect-ratio:auto;margin-top:0;font-size:9px}.ghh3-audio-card{grid-column:1/-1;width:100%;height:34px;aspect-ratio:auto;margin-top:0}.ghh3-prompt{display:block;width:100%;height:100%;min-height:0;resize:none;overflow:auto;box-sizing:border-box;border:0;border-radius:6px;background:#1d2731;color:#e1e9ef;padding:7px 7px calc(7px + 14 * 1.4em);font:12px/1.4 Arial,sans-serif;outline:none;user-select:text;scrollbar-width:thin;scrollbar-color:#1f3540 transparent}.ghh3-prompt::placeholder{color:#52616d;opacity:1}.ghh3-prompt::-webkit-scrollbar{width:5px}.ghh3-prompt::-webkit-scrollbar-track{background:transparent}.ghh3-prompt::-webkit-scrollbar-thumb{background:#1f3540;border-radius:3px}.ghh3-prompt::-webkit-scrollbar-thumb:hover{background:#294955}.ghh3-advanced{position:absolute;left:0;right:0;top:auto;bottom:0;z-index:50;display:flex;flex-direction:column-reverse;height:auto;min-height:0;margin:0;padding:0 0 2px;box-sizing:border-box;user-select:none;overflow:visible;background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-shadow:none}.ghh3-advanced>summary{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced .ghh3-advanced-body{background:var(--ghh3-node-bg,#1d2731)!important;padding-left:16px;padding-right:16px}.ghh3-advanced[open]{background:var(--ghh3-node-bg,#1d2731)!important;border:0;border-radius:0;box-sizing:border-box;box-shadow:none}.ghh3-size{color:#0db5e8;font-size:12px;padding:2px 0 4px}
       .ghh3-size{display:flex;justify-content:space-between;align-items:center;color:#0db5e8;font-size:12px;padding:2px 3px 5px}.ghh3-task{white-space:nowrap}.ghh3-dimensions{white-space:nowrap;text-align:right}.ghh3-advanced-row{display:grid;grid-template-columns:minmax(0,1fr) 220px;align-items:center;gap:8px;min-height:30px}.ghh3-advanced-row>label{text-align:left;color:#aebdca}.ghh3-control{width:220px;justify-self:end;box-sizing:border-box;background:#182633;color:#dbe8f1;border:1px solid #354b5d;border-radius:4px;padding:5px}.ghh3-number{width:220px;height:30px;display:grid;grid-template-columns:26px minmax(0,1fr) 26px;align-items:stretch;justify-self:end}.ghh3-number button{border:1px solid #354b5d;background:#182633;color:#c7d8e4;font-size:10px;padding:0;cursor:pointer}.ghh3-number button:first-child{border-radius:4px 0 0 4px}.ghh3-number button:last-child{border-radius:0 4px 4px 0}.ghh3-number input{width:100%;min-width:0;border:1px solid #354b5d;border-left:0;border-right:0;border-radius:0;background:#182633;color:#dbe8f1;padding:5px;box-sizing:border-box}.ghh3-number input::-webkit-inner-spin-button,.ghh3-number input::-webkit-outer-spin-button{appearance:none;margin:0}.ghh3-toggle{position:relative;display:inline-flex;width:38px;height:22px;justify-self:end;cursor:pointer}.ghh3-toggle input{opacity:0;width:0;height:0}.ghh3-toggle span{position:absolute;inset:0;border-radius:12px;background:#39434d;border:1px solid #52616d;transition:.15s}.ghh3-toggle span:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:#c3cbd1;transition:.15s}.ghh3-toggle input:checked+span{background:#0aa4d6;border-color:#0aa4d6}.ghh3-toggle input:checked+span:before{transform:translateX(16px);background:#fff}
       .ghh3-drop-title-row .ghh3-drop-icon{display:inline-flex;align-items:center;justify-content:center;height:1.2em;font-size:10px;line-height:1;margin:0}
       .ghh3-audio-drop .ghh3-drop-icon{font-size:14px;line-height:1;height:1.2em}
@@ -437,6 +547,12 @@ function createPanel(node) {
     // input. Clean it before ComfyUI serializes/submits the prompt.
     sanitizeHiddenInputs(node);
     const prompt = make("div"); prompt.className = "ghh3-prompt ghh3-prompt-rich"; prompt.contentEditable = "true"; prompt.spellcheck = false;
+    prompt.tabIndex = 0;
+    prompt.setAttribute("role", "textbox");
+    prompt.setAttribute("aria-multiline", "true");
+    prompt.style.userSelect = "text";
+    prompt.style.pointerEvents = "auto";
+    registerPromptEditor(prompt);
     let promptPlainText = cleanPrompt(promptWidget?.value);
     let promptReadOnly = false;
     let promptComposing = false;
@@ -711,7 +827,8 @@ function createPanel(node) {
     };
     const renderPromptHighlights = () => {
         const source = String(prompt.value || "");
-        const restoreSelection = document.activeElement === prompt ? selectionOffsets() : null;
+        const keepFocus = document.activeElement === prompt || prompt.dataset.ghh3Editing === "1";
+        const restoreSelection = keepFocus ? selectionOffsets() : null;
         prompt.replaceChildren();
         const appendPlain = text => {
             const parts = text.split("\n");
@@ -776,7 +893,10 @@ function createPanel(node) {
             prompt.appendChild(sentinel);
         }
         prompt.classList.toggle("ghh3-prompt-empty", !source);
-        if (restoreSelection) setEditorSelection(restoreSelection[0], restoreSelection[1]);
+        if (restoreSelection) {
+            if (document.activeElement !== prompt) prompt.focus({ preventScroll: true });
+            setEditorSelection(restoreSelection[0], restoreSelection[1]);
+        }
     };
     const promptDecorationsOutOfSync = source => {
         const expectedMedia = promptMediaMatches(source).map(item => {
@@ -908,7 +1028,7 @@ function nodeColorToCss(value) {
     driveAudioOrdinalControl.className = "ghh3-control";
     addAdvanced("drive_audio_ordinal", t("Drive audio"), driveAudioOrdinalControl);
     addAdvanced("strict_prompt_tags", t("Strict prompt tags"), check("strict_prompt_tags"));
-    addAdvanced("ref_image_size", t("Reference image size"), select("ref_image_size", ["match", "max"]));
+    addAdvanced("ref_image_size", t("Reference image size"), select("ref_image_size", ["match", "1.2x", "1.5x", "2x", "max"]));
     const audioModeWidget = widget(node, "audio_mode");
     const audioModeByMode = {};
     const audioModeAutoByMode = {};
@@ -921,9 +1041,29 @@ function nodeColorToCss(value) {
             .filter(([slot, entry]) => entry?.kind === "audio" && slot !== "hybrid_audio")
             .sort((a, b) => a[0].localeCompare(b[0]));
         return [
-            ...videos.map(([slot, entry], index) => ({ ordinal: index + 1, name: entry.name, slot })),
-            ...audios.map(([slot, entry], index) => ({ ordinal: videos.length + index + 1, name: entry.name, slot })),
+            ...videos.map(([slot, entry], index) => ({ ordinal: index + 1, name: entry.name, slot, entry })),
+            ...audios.map(([slot, entry], index) => ({ ordinal: videos.length + index + 1, name: entry.name, slot, entry })),
         ];
+    };
+    const captureDriveAudioSelection = () => {
+        const ordinal = Number(widget(node, "drive_audio_ordinal")?.value || 0);
+        const selected = ordinal > 0 ? driveAudioEntries().find(item => item.ordinal === ordinal) : null;
+        return {
+            ordinal,
+            entry: selected?.entry || null,
+            slot: selected?.slot || null,
+        };
+    };
+    const restoreDriveAudioSelection = (selection, preserveReplacementSlot = false) => {
+        const entries = driveAudioEntries();
+        const selected = selection?.ordinal > 0
+            ? entries.find(item => item.entry === selection.entry)
+                || (preserveReplacementSlot ? entries.find(item => item.slot === selection.slot) : null)
+            : null;
+        const ordinal = selected?.ordinal || 0;
+        setWidget(node, "drive_audio_ordinal", ordinal);
+        driveAudioOrdinalControl.value = String(ordinal);
+        return ordinal;
     };
     const allReferenceAudioCount = () => driveAudioEntries().length;
     const hasModeAudio = () => state.mode === "text_keyframes"
@@ -952,12 +1092,12 @@ function nodeColorToCss(value) {
         audioModeAutoByMode[state.mode] = true;
         syncAudioModeDefault();
     };
-    const updateAdvancedVisibility = () => {
+    const updateAdvancedVisibility = (preserveAudioSettings = false) => {
         if (state.mode === "all_reference") {
             const count = allReferenceAudioCount();
             const current = Number(widget(node, "drive_audio_ordinal")?.value || 0);
             const entries = driveAudioEntries();
-            const next = count === 0 ? 0 : entries.some(entry => entry.ordinal === current) ? current : 1;
+            const next = count === 0 || current === 0 ? 0 : entries.some(entry => entry.ordinal === current) ? current : 1;
             setWidget(node, "drive_audio_ordinal", next);
             driveAudioOrdinalControl.replaceChildren(
                 new Option(t("None"), "0"),
@@ -973,7 +1113,7 @@ function nodeColorToCss(value) {
             row.hidden = !isVisible;
             row.style.display = isVisible ? "grid" : "none";
         }
-        syncAudioModeDefault();
+        if (!preserveAudioSettings) syncAudioModeDefault();
     };
     advancedRows.get("audio_mode")?.querySelector("select")?.addEventListener("change", event => {
         audioModeByMode[state.mode] = event.target.value;
@@ -983,6 +1123,7 @@ function nodeColorToCss(value) {
     });
     audioStrengthControl.querySelector("input")?.addEventListener("input", () => { audioStrengthManual = true; });
     driveAudioOrdinalControl.addEventListener("change", () => {
+        setWidget(node, "drive_audio_ordinal", Number(driveAudioOrdinalControl.value || 0));
         if (state.mode === "all_reference" && Number(driveAudioOrdinalControl.value || 0) === 0) {
             audioModeAutoByMode[state.mode] = true;
             audioModeByMode[state.mode] = "native";
@@ -1010,10 +1151,12 @@ function nodeColorToCss(value) {
     advanced.addEventListener("toggle", () => { persistState(); });
     root.appendChild(promptWrap); root.appendChild(advanced);
     const commitPromptEditorInput = () => {
+        const keepFocus = document.activeElement === prompt || prompt.dataset.ghh3Editing === "1";
         promptPlainText = editorText();
         // Keep native contenteditable editing intact for ordinary keystrokes.
         // Rebuild only when a media/dialogue decoration actually changed.
         if (promptDecorationsOutOfSync(promptPlainText)) renderPromptHighlights();
+        if (keepFocus && document.activeElement !== prompt) prompt.focus({ preventScroll: true });
         prompt.classList.toggle("ghh3-prompt-empty", !promptPlainText);
         if (pendingPromptSnapshot) {
             pushPromptUndo(pendingPromptSnapshot);
@@ -1046,7 +1189,8 @@ function nodeColorToCss(value) {
         promptByMode[state.mode] = prompt.value; setPromptWidget(node, prompt.value); persistState();
     });
     const isPromptHistoryKey = event => {
-        if (document.activeElement !== prompt || prompt.readOnly || !(event.ctrlKey || event.metaKey) || event.altKey) return;
+        const editing = document.activeElement === prompt || prompt.dataset.ghh3Editing === "1";
+        if (!editing || prompt.readOnly || !(event.ctrlKey || event.metaKey) || event.altKey) return;
         const key = String(event.key || "").toLowerCase();
         return key === "z" || key === "y";
     };
@@ -1104,7 +1248,21 @@ function nodeColorToCss(value) {
     delayedTooltip(optimizePrompt, () => t(optimizing ? "Optimizing click to cancel" : "Optimize prompt"));
     delayedTooltip(resetPrompt, () => t("Restore before optimization"));
     delayedTooltip(optimizerGear, () => t("Configure API"));
-    prompt.addEventListener("pointerdown", e => { if (e.button !== 1) e.stopPropagation(); });
+    const stopPromptKeyBubble = event => event.stopPropagation();
+    prompt.addEventListener("keydown", stopPromptKeyBubble);
+    prompt.addEventListener("keyup", stopPromptKeyBubble);
+    prompt.addEventListener("keypress", stopPromptKeyBubble);
+    prompt.addEventListener("focus", () => markPromptEditor(prompt, true));
+    prompt.addEventListener("pointerdown", e => {
+        markPromptEditor(prompt, true);
+        if (e.button === 1) return;
+        e.stopPropagation();
+        if (prompt.readOnly) return;
+        queueMicrotask(() => {
+            if (document.activeElement !== prompt) prompt.focus({ preventScroll: true });
+            app.canvas?.canvas?.blur?.();
+        });
+    });
     const promptCanConsumeWheel = event => {
         const inPrompt = event.composedPath?.().includes(prompt) || event.target === prompt;
         if (!inPrompt || prompt.scrollHeight <= prompt.clientHeight) return false;
@@ -1527,27 +1685,53 @@ function nodeColorToCss(value) {
             has_api_key: false,
         };
     };
+    async function fetchOptimizerJson(path, options = {}, retryEmpty = true) {
+        const response = await api.fetchApi(path, options);
+        const text = await response.text();
+        if (!text.trim() && retryEmpty) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+            const separator = path.includes("?") ? "&" : "?";
+            return fetchOptimizerJson(`${path}${separator}_=${Date.now()}`, options, false);
+        }
+        let data;
+        try { data = text ? JSON.parse(text) : {}; }
+        catch { throw new Error(`模型列表接口返回了无效数据 (HTTP ${response.status})`); }
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+    }
     async function loadOptimizerSettings() {
         if (optimizerSettings) {
-            if (!Array.isArray(optimizerSettings.runninghub_models) || !optimizerSettings.runninghub_models.length) {
-                const response = await api.fetchApi("/goohai/minimax-h3/prompt-optimizer/config", { cache: "no-store" });
-                if (!response.ok) throw new Error("Unable to load prompt optimizer settings");
-                const defaults = await response.json();
-                optimizerSettings = {
-                    ...defaults,
-                    ...optimizerSettings,
-                    runninghub_models: defaults.runninghub_models || [],
-                    models: optimizerSettings.models || defaults.models || [],
-                    missing_dependencies: optimizerSettings.missing_dependencies || defaults.missing_dependencies || [],
-                };
+            if (!Array.isArray(optimizerSettings.runninghub_models) || !optimizerSettings.runninghub_models.length
+                || !Array.isArray(optimizerSettings.mmproj_models) || !optimizerSettings.mmproj_models.length) {
+                try {
+                    const defaults = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/config`, { cache: "no-store" });
+                    optimizerSettings = {
+                        ...defaults,
+                        ...optimizerSettings,
+                        runninghub_models: defaults.runninghub_models || [],
+                        models: optimizerSettings.models || defaults.models || [],
+                        mmproj_models: optimizerSettings.mmproj_models || defaults.mmproj_models || [],
+                        missing_dependencies: optimizerSettings.missing_dependencies || defaults.missing_dependencies || [],
+                    };
+                } catch (error) {
+                    console.warn("MiniMax H3 prompt optimizer settings refresh failed; using saved settings:", error);
+                    optimizerSettings = {
+                        ...optimizerSettings,
+                        runninghub_models: optimizerSettings.runninghub_models || [],
+                        models: optimizerSettings.models || [],
+                        mmproj_models: optimizerSettings.mmproj_models || [],
+                        missing_dependencies: optimizerSettings.missing_dependencies || [],
+                    };
+                }
             }
             optimizerSettings = migrateLegacyOptimizerDefault(optimizerSettings);
             refreshOptimizerName();
             return optimizerSettings;
         }
-        const response = await api.fetchApi("/goohai/minimax-h3/prompt-optimizer/config", { cache: "no-store" });
-        if (!response.ok) throw new Error("Unable to load prompt optimizer settings");
-        optimizerSettings = migrateLegacyOptimizerDefault(await response.json());
+        let defaults;
+        try { defaults = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/config`, { cache: "no-store" }); }
+        catch (error) { throw new Error(`${t("Unable to load prompt optimizer settings")}: ${error.message}`); }
+        optimizerSettings = migrateLegacyOptimizerDefault(defaults);
         refreshOptimizerName(); refreshPromptConnection();
         return optimizerSettings;
     }
@@ -1625,6 +1809,7 @@ function nodeColorToCss(value) {
             localModelMenu.append(localModelSearch, localModelResults); localModelGroup.append(localModelMenu);
             const refreshModels = make("button"); refreshModels.type = "button"; refreshModels.className = "ghh3-opt-refresh"; refreshModels.innerHTML = refreshIcon; refreshModels.title = t("Refresh local models"); refreshModels.setAttribute("aria-label", t("Refresh local models")); localModelGroup.append(refreshModels);
             row("Local model", localModelGroup);
+            const localMmproj = row("Vision model (mmproj)", make("select"));
             const localDevice = row("Local device", make("select")); localDevice.append(new Option("Auto", "auto"), new Option("GPU", "cuda"), new Option("CPU", "cpu")); localDevice.value = current.local_device || "cuda";
             const dependencyStatus = make("div"); dependencyStatus.className = "ghh3-opt-dependencies"; dialog.append(dependencyStatus);
             row("Output language", language);
@@ -1634,8 +1819,24 @@ function nodeColorToCss(value) {
             const autoOptimize = make("input"); autoOptimize.type = "checkbox"; autoOptimize.checked = !!current.auto_optimize; autoOptimize.className = "ghh3-opt-check"; checkboxRow("Automatic optimization before run", autoOptimize);
             dialog.append(checkboxRows);
             let localModels = current.models || [];
+            let mmprojModels = current.mmproj_models || [];
+            let mmprojManuallySelected = !!current.local_mmproj;
+            const selectedLocalModel = () => localModels.find(item => item.relative_path === localModel.value);
+            const fillMmprojModels = (models = mmprojModels, preserveValue = localMmproj.value || current.local_mmproj || "") => {
+                mmprojModels = models || [];
+                localMmproj.replaceChildren();
+                localMmproj.append(new Option(t(mmprojModels.length ? "Choose vision projector" : "No mmproj models found"), ""));
+                mmprojModels.forEach(item => localMmproj.append(new Option(item.name, item.relative_path)));
+                if ([...localMmproj.options].some(option => option.value === preserveValue)) localMmproj.value = preserveValue;
+            };
+            const autoSelectMmproj = () => {
+                const selected = selectedLocalModel();
+                if (selected?.format !== "gguf") { localMmproj.value = ""; return; }
+                const best = selected.mmproj_candidates?.find(value => mmprojModels.some(item => item.relative_path === value));
+                localMmproj.value = best || "";
+            };
             const refreshModelPicker = () => {
-                const selected = localModels.find(item => item.relative_path === localModel.value);
+                const selected = selectedLocalModel();
                 localModelPicker.textContent = selected?.name || t("No compatible local vision models found");
             };
             const renderModelResults = () => {
@@ -1650,7 +1851,7 @@ function nodeColorToCss(value) {
                 for (const item of filtered) {
                     const option = make("button", {}, item.name); option.type = "button"; option.className = "ghh3-opt-model-option";
                     option.classList.toggle("selected", item.relative_path === localModel.value);
-                    option.onclick = () => { localModel.value = item.relative_path; refreshModelPicker(); localModelMenu.classList.remove("open"); };
+                    option.onclick = () => { localModel.value = item.relative_path; mmprojManuallySelected = false; refreshModelPicker(); autoSelectMmproj(); sync(); localModelMenu.classList.remove("open"); };
                     localModelResults.append(option);
                 }
             };
@@ -1663,13 +1864,17 @@ function nodeColorToCss(value) {
                 refreshModelPicker(); renderModelResults();
             };
             const showDependencies = missing => { dependencyStatus.textContent = missing?.length ? `${t("Missing local model dependencies")}: ${missing.join(", ")}` : ""; };
-            fillModels(current.models); showDependencies(current.missing_dependencies);
+            fillMmprojModels(current.mmproj_models);
+            fillModels(current.models);
+            if (!localMmproj.value) autoSelectMmproj();
+            showDependencies(current.missing_dependencies);
             localModelPicker.onclick = () => {
                 const opening = !localModelMenu.classList.contains("open");
                 localModelMenu.classList.toggle("open", opening);
                 if (opening) { localModelSearch.value = ""; renderModelResults(); requestAnimationFrame(() => localModelSearch.focus()); }
             };
             localModelSearch.addEventListener("input", renderModelResults);
+            localMmproj.addEventListener("change", () => { mmprojManuallySelected = !!localMmproj.value; });
             dialog.addEventListener("pointerdown", event => {
                 if (!localModelGroup.contains(event.target)) localModelMenu.classList.remove("open");
                 if (!runninghubModelGroup.contains(event.target)) runninghubModelMenu.classList.remove("open");
@@ -1681,17 +1886,25 @@ function nodeColorToCss(value) {
                 finally { button.classList.remove("loading"); button.disabled = false; }
             };
             refreshRunninghubModels.onclick = () => withRefreshState(refreshRunninghubModels, async () => {
-                const response = await api.fetchApi("/goohai/minimax-h3/prompt-optimizer/runninghub-models", { cache: "no-store" });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || "RunningHub 模型列表刷新失败");
+                const data = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/runninghub-models`, { cache: "no-store" });
                 fillRunninghubModels(data.runninghub_models);
                 optimizerSettings = { ...(optimizerSettings || current), runninghub_models: [...runninghubModels] };
             }).catch(error => alert(error.message));
             refreshModels.onclick = () => withRefreshState(refreshModels, async () => {
-                const response = await api.fetchApi("/goohai/minimax-h3/prompt-optimizer/models", { cache: "no-store" });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || "本地模型列表刷新失败");
-                fillModels(data.models); showDependencies(data.missing_dependencies);
+                const data = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/models`, { cache: "no-store" });
+                const previousModel = localModel.value;
+                const previousMmproj = localMmproj.value;
+                fillMmprojModels(data.mmproj_models, previousMmproj);
+                fillModels(data.models, previousModel);
+                const manualStillExists = mmprojManuallySelected && mmprojModels.some(item => item.relative_path === previousMmproj);
+                if (!manualStillExists) { mmprojManuallySelected = false; autoSelectMmproj(); }
+                optimizerSettings = {
+                    ...(optimizerSettings || current),
+                    models: [...localModels],
+                    mmproj_models: [...mmprojModels],
+                    missing_dependencies: data.missing_dependencies || [],
+                };
+                sync(); showDependencies(data.missing_dependencies);
             }).catch(error => alert(error.message));
             if (!current.models) refreshModels.click();
             const sync = () => {
@@ -1706,6 +1919,8 @@ function nodeColorToCss(value) {
                 url.closest("label")?.classList.toggle("ghh3-opt-hidden", local || !custom);
                 protocol.closest("label")?.classList.toggle("ghh3-opt-hidden", local || !custom);
                 [localModel, localDevice, refreshModels].forEach(control => (control.closest("label") || control).classList.toggle("ghh3-opt-hidden", !local));
+                const gguf = selectedLocalModel()?.format === "gguf";
+                localMmproj.closest("label")?.classList.toggle("ghh3-opt-hidden", !local || !gguf);
                 dependencyStatus.classList.toggle("ghh3-opt-hidden", !local || !dependencyStatus.textContent);
                 const preset = optimizerProviders[provider.value];
                 if (!custom) { url.value = preset.url; model.value = preset.model; protocol.value = preset.protocol; }
@@ -1719,7 +1934,7 @@ function nodeColorToCss(value) {
                 const outputLanguage = language.querySelector("input:checked")?.value || "中文";
                 const preset = optimizerProviders[provider.value];
                 const selectedModel = provider.value === "runninghub" ? runninghubModel.value : model.value;
-                const body = { mode: mode.value, provider: provider.value, api_url: provider.value === "custom" ? url.value : preset?.url || url.value, model: selectedModel, protocol: provider.value === "custom" ? protocol.value : preset?.protocol || protocol.value, read_media: readMedia.checked, output_language: outputLanguage, local_model: localModel.value, local_device: localDevice.value, auto_optimize: autoOptimize.checked };
+                const body = { mode: mode.value, provider: provider.value, api_url: provider.value === "custom" ? url.value : preset?.url || url.value, model: selectedModel, protocol: provider.value === "custom" ? protocol.value : preset?.protocol || protocol.value, read_media: readMedia.checked, output_language: outputLanguage, local_model: localModel.value, local_mmproj: localMmproj.value, local_device: localDevice.value, auto_optimize: autoOptimize.checked };
                 body.api_key = key.value;
                 body.has_api_key = !!key.value;
                 optimizerSettings = body; refreshOptimizerName(); refreshPromptConnection(); persistState(); close();
@@ -1819,7 +2034,7 @@ function nodeColorToCss(value) {
         return payload;
     }
     function optimizerContextSignature(specs, mode = state.mode, task = resolvedTaskType(), duration = Number(durationWidget?.value || 5), context = optimizerTaskContext(specs, mode)) {
-        return JSON.stringify({ task, duration, mode, context, media: specs.map(spec => [spec.slot, spec.kind, spec.label, media.get(spec.slot)?.name || "", !!media.get(spec.slot)?.muted]), settings: optimizerSettings && [optimizerSettings.mode, optimizerSettings.provider, optimizerSettings.api_url, optimizerSettings.model, optimizerSettings.protocol, optimizerSettings.local_model, optimizerSettings.local_device, optimizerSettings.read_media, optimizerSettings.output_language] });
+        return JSON.stringify({ task, duration, mode, context, media: specs.map(spec => [spec.slot, spec.kind, spec.label, media.get(spec.slot)?.name || "", !!media.get(spec.slot)?.muted]), settings: optimizerSettings && [optimizerSettings.mode, optimizerSettings.provider, optimizerSettings.api_url, optimizerSettings.model, optimizerSettings.protocol, optimizerSettings.local_model, optimizerSettings.local_mmproj, optimizerSettings.local_device, optimizerSettings.read_media, optimizerSettings.output_language] });
     }
     function optimizerTaskContext(specs, mode = state.mode, audioMode = widget(node, "audio_mode")?.value || "native") {
         const keyframes = specs
@@ -1865,7 +2080,7 @@ function nodeColorToCss(value) {
         const requestId = optimizerRequestId;
         optimizerAbort?.abort();
         if (requestId) {
-            api.fetchApi("/goohai/minimax-h3/prompt-optimizer/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: requestId }) }).catch(() => {});
+            api.fetchApi(`${OPTIMIZER_ROUTE}/cancel`, { method: "POST", body: new Blob([JSON.stringify({ request_id: requestId })], { type: "application/json" }) }).catch(() => {});
         }
     }
     function resemblesOfficialPrompt(value, task = resolvedTaskType()) {
@@ -1874,6 +2089,31 @@ function nodeColorToCss(value) {
             ? ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"]
             : ["integrated_multimodal_description:", "overall_soundscape:", "non_diegetic_music:"];
         return fields.every(field => text.includes(field.toLowerCase())) && /\[shot\s*1\]/i.test(text);
+    }
+    async function waitWithAbort(milliseconds, signal) {
+        await new Promise((resolve, reject) => {
+            let timer;
+            const aborted = () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); };
+            if (signal?.aborted) return aborted();
+            timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+            signal?.addEventListener("abort", aborted, { once: true });
+        });
+    }
+    async function runRunningHubOptimization(requestBody, signal) {
+        const started = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/start`, {
+            method: "POST", signal,
+            body: new Blob([JSON.stringify(requestBody)], { type: "application/json" }),
+        }, false);
+        if (started.status !== "running") throw new Error(started.error || "Prompt optimization failed");
+        while (true) {
+            await waitWithAbort(1500, signal);
+            const status = await fetchOptimizerJson(
+                `${OPTIMIZER_ROUTE}/status?request_id=${encodeURIComponent(requestBody.request_id)}`,
+                { cache: "no-store", signal },
+                false,
+            );
+            if (status.status === "success") return status;
+        }
     }
     async function runPromptOptimization({ automatic = false } = {}) {
         if (optimizing || upstreamConnected() || node.graph !== app.graph || (node.mode != null && node.mode !== 0)) return false;
@@ -1905,14 +2145,22 @@ function nodeColorToCss(value) {
             const timeout = setTimeout(() => {
                 const requestId = optimizerRequestId;
                 optimizerAbort?.abort();
-                if (requestId) api.fetchApi("/goohai/minimax-h3/prompt-optimizer/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: requestId }) }).catch(() => {});
+                if (requestId) api.fetchApi(`${OPTIMIZER_ROUTE}/cancel`, { method: "POST", body: new Blob([JSON.stringify({ request_id: requestId })], { type: "application/json" }) }).catch(() => {});
             }, 200000);
             let response;
+            let data;
             try {
-                response = await api.fetchApi("/goohai/minimax-h3/prompt-optimizer/optimize", { method: "POST", headers: { "Content-Type": "application/json" }, signal: optimizerAbort.signal, body: JSON.stringify({ request_id: optimizerRequestId, prompt: before, task, duration, media: mediaPayload, context: taskContext, config: optimizerSettings }) });
+                const requestBody = { request_id: optimizerRequestId, prompt: before, task, duration, media: mediaPayload, context: taskContext, config: optimizerSettings };
+                if (!local && optimizerSettings?.provider === "runninghub") {
+                    data = await runRunningHubOptimization(requestBody, optimizerAbort.signal);
+                } else {
+                    response = await api.fetchApi(`${OPTIMIZER_ROUTE}/optimize`, { method: "POST", signal: optimizerAbort.signal, body: new Blob([JSON.stringify(requestBody)], { type: "application/json" }) });
+                    const text = await response.text();
+                    try { data = JSON.parse(text); }
+                    catch { throw new Error(/^\s*(?:<!doctype\s+html|<html)/i.test(text) ? "云端网关返回了网页而不是节点数据" : "提示词优化接口返回了无效数据"); }
+                    if (!response.ok) throw new Error(data.error || "Prompt optimization failed");
+                }
             } finally { clearTimeout(timeout); }
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || "Prompt optimization failed");
             optimizerCache = { contextSignature, originalPrompt: before, result: data.prompt }; applyOptimizedPrompt(data.prompt, before, optimizationMode); playOptimizerCompleteSound();
             return true;
         } catch (error) {
@@ -2264,11 +2512,200 @@ function nodeColorToCss(value) {
             console.error("[MiniMax H3 Integration]", error);
         }
     }
+    let suppressMediaClickUntil = 0;
+    function canReorderMedia(sourceSlot, targetSlot) {
+        if (!sourceSlot || !targetSlot || sourceSlot === targetSlot) return false;
+        const source = media.get(sourceSlot);
+        const target = media.get(targetSlot);
+        if (!source || !target) return false;
+        if (state.mode === "text_keyframes") {
+            return [sourceSlot, targetSlot].every(item => item === "first_frame" || item === "last_frame")
+                && source.kind === "image" && target.kind === "image";
+        }
+        const reserved = new Set(["first_frame", "last_frame", "hybrid_audio"]);
+        return !reserved.has(sourceSlot) && !reserved.has(targetSlot) && source.kind === target.kind;
+    }
+    function promptMediaIdentityOrder() {
+        if (state.mode === "text_keyframes") {
+            return {
+                picture: ["first_frame", "last_frame"].map(slot => media.get(slot)).filter(entry => entry?.kind === "image"),
+                video: [],
+                audio: media.get("hybrid_audio") ? [media.get("hybrid_audio")] : [],
+            };
+        }
+        const ordered = kind => [...media.entries()]
+            .filter(([slot, entry]) => !["first_frame", "last_frame", "hybrid_audio"].includes(slot) && entry?.kind === kind)
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([, entry]) => entry);
+        return {
+            picture: ordered("image"),
+            video: ordered("video"),
+            audio: driveAudioEntries().map(item => item.entry),
+        };
+    }
+    function applyPromptMediaMappings(mappings) {
+        if (!mappings.size) return;
+        let value = String(prompt.value || "");
+        const matches = promptMediaMatches(value);
+        for (let index = matches.length - 1; index >= 0; index--) {
+            const match = matches[index];
+            const key = `${match.type}:${match.ordinal}`;
+            if (!mappings.has(key)) continue;
+            const replacementOrdinal = mappings.get(key);
+            const replacement = replacementOrdinal == null ? "" : match.raw.replace(/\d+/, String(replacementOrdinal));
+            value = value.slice(0, match.index) + replacement + value.slice(match.index + match.raw.length);
+        }
+        if (value === prompt.value) return;
+        prompt.value = value;
+        promptByMode[state.mode] = value;
+        setPromptWidget(node, value);
+    }
+    function remapPromptAfterMediaChange(before, removeMissing = false) {
+        const after = promptMediaIdentityOrder();
+        const mappings = new Map();
+        for (const type of ["picture", "video", "audio"]) {
+            before[type].forEach((entry, index) => {
+                const nextIndex = after[type].indexOf(entry);
+                if (nextIndex >= 0 && nextIndex !== index) mappings.set(`${type}:${index + 1}`, nextIndex + 1);
+                else if (nextIndex < 0 && removeMissing) mappings.set(`${type}:${index + 1}`, null);
+            });
+        }
+        applyPromptMediaMappings(mappings);
+    }
+    function remapPromptForMediaOrder(assignments, kind) {
+        const entryAt = slot => assignments.has(slot) ? assignments.get(slot) : media.get(slot);
+        const orderedKindEntries = (targetKind, getter) => {
+            if (targetKind === "image" && state.mode === "text_keyframes") {
+                return ["first_frame", "last_frame"].map(getter).filter(entry => entry?.kind === "image");
+            }
+            return [...media.keys()]
+                .filter(slot => !["first_frame", "last_frame", "hybrid_audio"].includes(slot) && getter(slot)?.kind === targetKind)
+                .sort((a, b) => a.localeCompare(b))
+                .map(getter);
+        };
+        const orderedAudioEntries = getter => {
+            const slots = [...media.keys()];
+            const videos = slots.filter(slot => getter(slot)?.kind === "video" && !getter(slot).muted).sort((a, b) => a.localeCompare(b));
+            const audios = slots.filter(slot => getter(slot)?.kind === "audio" && slot !== "hybrid_audio").sort((a, b) => a.localeCompare(b));
+            return [...videos, ...audios].map(getter);
+        };
+        const mappings = new Map();
+        const mapIdentityOrdinals = (type, before, after) => {
+            before.forEach((entry, index) => {
+                const nextIndex = after.indexOf(entry);
+                if (nextIndex >= 0 && nextIndex !== index) mappings.set(`${type}:${index + 1}`, nextIndex + 1);
+            });
+        };
+        if (kind === "image" || kind === "video") {
+            mapIdentityOrdinals(
+                kind === "image" ? "picture" : "video",
+                orderedKindEntries(kind, slot => media.get(slot)),
+                orderedKindEntries(kind, entryAt),
+            );
+        }
+        if (kind === "video" || kind === "audio") {
+            mapIdentityOrdinals(
+                "audio",
+                orderedAudioEntries(slot => media.get(slot)),
+                orderedAudioEntries(entryAt),
+            );
+        }
+        applyPromptMediaMappings(mappings);
+    }
+    function reorderMediaSlots(sourceSlot, targetSlot) {
+        if (!canReorderMedia(sourceSlot, targetSlot)) return false;
+        const source = media.get(sourceSlot);
+        const driveSelection = captureDriveAudioSelection();
+        const assignments = new Map();
+        if (state.mode === "text_keyframes") {
+            assignments.set(sourceSlot, media.get(targetSlot));
+            assignments.set(targetSlot, source);
+        } else {
+            const slots = [...media.entries()]
+                .filter(([slot, entry]) => !["first_frame", "last_frame", "hybrid_audio"].includes(slot) && entry?.kind === source.kind)
+                .map(([slot]) => slot)
+                .sort((a, b) => a.localeCompare(b));
+            const sourceIndex = slots.indexOf(sourceSlot);
+            const targetIndex = slots.indexOf(targetSlot);
+            if (sourceIndex < 0 || targetIndex < 0) return false;
+            const entries = slots.map(slot => media.get(slot));
+            const [moved] = entries.splice(sourceIndex, 1);
+            entries.splice(targetIndex, 0, moved);
+            slots.forEach((slot, index) => assignments.set(slot, entries[index]));
+        }
+        remapPromptForMediaOrder(assignments, source.kind);
+        for (const [slot, entry] of assignments) {
+            media.set(slot, entry);
+            setMediaWidget(node, slot, entry.name);
+        }
+        restoreDriveAudioSelection(driveSelection);
+        refreshPromptMediaPreviews(...assignments.values());
+        persistState();
+        render(true);
+        return true;
+    }
+    function installMediaLongPressReorder(item, slot) {
+        item.onpointerdown = event => {
+            if (event.target.closest("button") || event.button !== 0 || !event.isPrimary) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const originX = event.clientX;
+            const originY = event.clientY;
+            let active = false;
+            let target = null;
+            let timer = window.setTimeout(() => {
+                if (!item.isConnected) return;
+                active = true;
+                suppressMediaClickUntil = Date.now() + 600;
+                item.classList.add("ghh3-reorder-source");
+                try { item.setPointerCapture(event.pointerId); } catch {}
+            }, 350);
+            const setTarget = next => {
+                if (target === next) return;
+                target?.classList.remove("ghh3-reorder-target");
+                target = next;
+                target?.classList.add("ghh3-reorder-target");
+            };
+            const move = moveEvent => {
+                if (!active) {
+                    if (Math.hypot(moveEvent.clientX - originX, moveEvent.clientY - originY) > 8) {
+                        clearTimeout(timer);
+                        timer = 0;
+                    }
+                    return;
+                }
+                moveEvent.preventDefault();
+                moveEvent.stopPropagation();
+                const candidate = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest?.(".ghh3-card");
+                const candidateSlot = candidate?.dataset?.ghh3DropSlot;
+                setTarget(candidate && root.contains(candidate) && canReorderMedia(slot, candidateSlot) ? candidate : null);
+            };
+            const finish = finishEvent => {
+                if (timer) clearTimeout(timer);
+                window.removeEventListener("pointermove", move, true);
+                window.removeEventListener("pointerup", finish, true);
+                window.removeEventListener("pointercancel", finish, true);
+                item.classList.remove("ghh3-reorder-source");
+                target?.classList.remove("ghh3-reorder-target");
+                try { item.releasePointerCapture(event.pointerId); } catch {}
+                if (!active) return;
+                finishEvent.preventDefault();
+                finishEvent.stopPropagation();
+                suppressMediaClickUntil = Date.now() + 600;
+                const targetSlot = target?.dataset?.ghh3DropSlot;
+                if (targetSlot) reorderMediaSlots(slot, targetSlot);
+            };
+            window.addEventListener("pointermove", move, true);
+            window.addEventListener("pointerup", finish, true);
+            window.addEventListener("pointercancel", finish, true);
+        };
+    }
     function card(slot, entry, square = true) {
         const item = make("div"); item.className = "ghh3-card"; if (!square) item.style.aspectRatio = "16/9"; if (slot === "hybrid_audio") { item.classList.add("ghh3-audio-card"); item.style.aspectRatio = "auto"; }
         item.dataset.ghh3DropSlot = slot;
-        if (entry.kind === "image") { const img = make("img"); img.src = fileUrl(entry.name); item.appendChild(img); }
-        else if (entry.kind === "video") { const video = make("video"); video.src = fileUrl(entry.name); video.muted = !!entry.muted; video.preload = "metadata"; item.appendChild(video); const play = make("button", {}, "▶"); play.className = "ghh3-play"; play.onclick = e => { e.stopPropagation(); video.muted = !!entry.muted; video.paused ? video.play() : video.pause(); }; item.appendChild(play); }
+        const reorderIndicator = make("div", {}, "✥"); reorderIndicator.className = "ghh3-reorder-indicator"; item.appendChild(reorderIndicator);
+        if (entry.kind === "image") { const img = make("img"); img.src = fileUrl(entry.name); img.draggable = false; item.appendChild(img); }
+        else if (entry.kind === "video") { const video = make("video"); video.src = fileUrl(entry.name); video.muted = !!entry.muted; video.preload = "metadata"; video.draggable = false; item.appendChild(video); const play = make("button", {}, "▶"); play.className = "ghh3-play"; play.onclick = e => { e.stopPropagation(); video.muted = !!entry.muted; video.paused ? video.play() : video.pause(); }; item.appendChild(play); }
         else {
             item.appendChild(make("div", { height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#8ea3b4", fontSize: "22px" }, "♫"));
             const audio = new Audio(fileUrl(entry.name));
@@ -2322,11 +2759,24 @@ function nodeColorToCss(value) {
             controls.append(toggle, time); item.appendChild(controls);
         }
         item.appendChild(make("div", {}, `${labelFor(slot, entry.kind)}: ${entry.name}`)).className = "ghh3-card-name";
-        const remove = make("button", {}, "×"); remove.className = "ghh3-remove"; remove.onclick = e => { e.stopPropagation(); const removed = media.get(slot); media.delete(slot); setMediaWidget(node, slot, ""); syncAudioModeAfterMediaChange(slot); refreshPromptMediaPreviews(removed); persistState(); render(); }; item.appendChild(remove);
+        const remove = make("button", {}, "×"); remove.className = "ghh3-remove"; remove.onclick = e => {
+            e.stopPropagation();
+            const beforeOrder = promptMediaIdentityOrder();
+            const driveSelection = captureDriveAudioSelection();
+            const removed = media.get(slot);
+            media.delete(slot);
+            setMediaWidget(node, slot, "");
+            remapPromptAfterMediaChange(beforeOrder, true);
+            restoreDriveAudioSelection(driveSelection);
+            syncAudioModeAfterMediaChange(slot);
+            refreshPromptMediaPreviews(removed);
+            persistState();
+            render();
+        }; item.appendChild(remove);
         let clickTimer;
-        item.onpointerdown = e => { if (e.target.closest("button")) return; e.preventDefault(); e.stopPropagation(); };
-        item.onclick = e => { if (e.target.closest("button")) return; e.stopPropagation(); clearTimeout(clickTimer); clickTimer = setTimeout(() => insertTag(entry.kind, slot), 220); };
-        item.ondblclick = e => { if (e.target.closest("button")) return; e.stopPropagation(); clearTimeout(clickTimer); if (entry.kind === "video") insertVideoAudioTag(slot); };
+        installMediaLongPressReorder(item, slot);
+        item.onclick = e => { if (e.target.closest("button") || Date.now() < suppressMediaClickUntil) return; e.stopPropagation(); clearTimeout(clickTimer); clickTimer = setTimeout(() => insertTag(entry.kind, slot), 220); };
+        item.ondblclick = e => { if (e.target.closest("button") || Date.now() < suppressMediaClickUntil) return; e.stopPropagation(); clearTimeout(clickTimer); if (entry.kind === "video") insertVideoAudioTag(slot); };
         item.onpointerenter = () => { hoverPasteSlot = slot; };
         item.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = undefined; };
         item.ondragover = e => { e.preventDefault(); e.stopPropagation(); };
@@ -2366,9 +2816,9 @@ function nodeColorToCss(value) {
         }
         d.onclick = () => choose(slot); d.onpointerenter = () => { hoverPasteSlot = slot; }; d.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = undefined; }; d.ondragover = e => { e.preventDefault(); e.stopPropagation(); }; d.ondrop = e => { e.preventDefault(); e.stopPropagation(); accept(e.dataTransfer.files, slot); }; return d;
     }
-    function render() {
+    function render(preserveAdvancedSettings = false) {
         normalizePromptTagFormat();
-        updateAdvancedVisibility();
+        updateAdvancedVisibility(preserveAdvancedSettings);
         root.querySelector(".ghh3-dynamic")?.remove(); const box = make("div"); box.className = "ghh3-box ghh3-dynamic";
         if (state.mode === "text_keyframes") {
             const grid = make("div"); grid.className = "ghh3-keygrid";
@@ -2376,7 +2826,7 @@ function nodeColorToCss(value) {
             grid.appendChild(media.has("hybrid_audio") ? card("hybrid_audio", media.get("hybrid_audio"), false) : addDrop("hybrid_audio"));
             box.appendChild(grid);
         } else {
-            const grid = make("div"); grid.className = "ghh3-grid"; const entries = [...media.entries()].filter(([slot]) => !["first_frame", "last_frame", "hybrid_audio"].includes(slot)).sort((a,b) => typeOrder[a[1].kind] - typeOrder[b[1].kind]);
+            const grid = make("div"); grid.className = "ghh3-grid"; const entries = [...media.entries()].filter(([slot]) => !["first_frame", "last_frame", "hybrid_audio"].includes(slot)).sort((a,b) => typeOrder[a[1].kind] - typeOrder[b[1].kind] || a[0].localeCompare(b[0]));
             if (!entries.length) grid.appendChild(addDrop(null, true));
             else { entries.forEach(([s,e]) => grid.appendChild(card(s,e))); grid.appendChild(addDrop()); }
             if (uploadNotice) grid.appendChild(make("div", {}, uploadNotice)).className = "ghh3-limit";
@@ -2419,6 +2869,8 @@ function nodeColorToCss(value) {
     window.addEventListener("paste", onPaste, true);
     async function accept(files, preferredSlot) {
         uploadNotice = "";
+        const beforeOrder = promptMediaIdentityOrder();
+        const driveSelection = captureDriveAudioSelection();
         const changedEntries = [];
         for (const file of files || []) {
             const kind = kindOf(file); if (!kind) continue;
@@ -2435,6 +2887,10 @@ function nodeColorToCss(value) {
                 changedEntries.push(entry);
             } catch (e) { console.error("[MiniMax H3 Integration]", e); }
             preferredSlot = null;
+        }
+        if (changedEntries.length) {
+            remapPromptAfterMediaChange(beforeOrder, false);
+            restoreDriveAudioSelection(driveSelection, true);
         }
         if (changedEntries.length) refreshPromptMediaPreviews(...changedEntries);
         persistState();
@@ -2600,7 +3056,7 @@ function nodeColorToCss(value) {
         clearInterval(optimizerTimer);
         optimizerAbort?.abort();
         optimizerCompleteAudio?.pause(); optimizerCompleteAudio = null;
-        if (optimizerRequestId) api.fetchApi("/goohai/minimax-h3/prompt-optimizer/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: optimizerRequestId }) }).catch(() => {});
+        if (optimizerRequestId) api.fetchApi(`${OPTIMIZER_ROUTE}/cancel`, { method: "POST", body: new Blob([JSON.stringify({ request_id: optimizerRequestId })], { type: "application/json" }) }).catch(() => {});
         stopActiveMedia();
         closeActiveTrimEditor?.();
         decodedAudioCache.clear();
@@ -2614,6 +3070,7 @@ function nodeColorToCss(value) {
         window.removeEventListener("keydown", capturePromptHistoryKeys, true);
         window.removeEventListener("keyup", releasePromptHistoryKeys, true);
         window.removeEventListener("storage", applyLocale);
+        unregisterPromptEditor(prompt);
         return oldRemoved?.apply(this, args);
     };
     const initialRestoreEpoch = restoreEpoch;
@@ -2631,7 +3088,10 @@ function nodeColorToCss(value) {
         if (node.size?.[0] !== WIDTH || node.size?.[1] !== userHeight) node.setSize([WIDTH, userHeight]);
         syncLayout(userHeight, true);
         refreshPromptConnection();
-        if (initialRestoreEpoch === restoreEpoch) restoringState = false;
+        if (initialRestoreEpoch === restoreEpoch) {
+            restoringState = false;
+            persistState();
+        }
     });
     return true;
 }
@@ -2643,6 +3103,8 @@ app.registerExtension({
         nodes: RH_NODE_IDS,
     },
     async setup() {
+        installPromptKeyShield();
+        for (const delay of [0, 100, 500, 1200]) setTimeout(() => patchLiteGraphPromptProcessKey(), delay);
         if (typeof app.ensureNodesRegistered !== "function") return;
         await app.ensureNodesRegistered(new Set(RH_NODE_IDS));
     },

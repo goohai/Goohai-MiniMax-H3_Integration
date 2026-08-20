@@ -3,15 +3,18 @@ from __future__ import annotations
 import math
 import os
 import json
+import logging
 
 import folder_paths
 import nodes
 import torch
+import comfy.model_management as model_management
 from comfy_api.latest import ComfyExtension, io
 from comfy_api.latest._input_impl import VideoFromFile
 from comfy_extras import nodes_audio
 
 from .conditioning import build_conditioning
+from .core import align_frame_count_down
 from .audio_ops import decode_av_latent
 from .sampling import (
     DEFAULT_SAMPLER_NAME,
@@ -242,6 +245,39 @@ def _default_model(options, preferred):
     return preferred if preferred in options else (options[0] if options else None)
 
 
+def _release_text_encoder(clip) -> None:
+    """Best-effort CLIP-only VRAM release across ComfyUI versions."""
+    patcher = getattr(clip, "patcher", None)
+    unloaded = False
+    try:
+        if patcher is not None:
+            unload = getattr(model_management, "unload_model_and_clones", None)
+            if not callable(unload):
+                # Compatibility with ComfyUI builds that used the older name.
+                unload = getattr(model_management, "unload_model_clones", None)
+            if callable(unload):
+                unload(patcher)
+                unloaded = True
+    except Exception as exc:
+        logging.warning("MiniMax H3 could not explicitly unload the text encoder: %s", exc)
+    finally:
+        if patcher is not None and not unloaded:
+            try:
+                # Last-resort targeted offload. Never unload every model here:
+                # both VAEs are still required by downstream nodes.
+                detach = getattr(patcher, "detach", None)
+                if callable(detach):
+                    detach()
+            except Exception as exc:
+                logging.warning("MiniMax H3 could not detach the text encoder: %s", exc)
+        try:
+            empty_cache = getattr(model_management, "soft_empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+        except Exception as exc:
+            logging.warning("MiniMax H3 could not clear released text-encoder cache: %s", exc)
+
+
 def _round32(value: float) -> int:
     return max(32, int(value / 32 + 0.5) * 32)
 
@@ -309,9 +345,9 @@ def _apply_audio_selection(audio, selection):
 def _sample_video_frames(frames, source_fps, target_frames):
     """Convert the source to 24fps without changing playback speed.
 
-    The caller supplies H3's aligned 17n+5 frame count. Sampling continues at
-    the original playback rate through that full model duration; only a source
-    that actually ends earlier is padded by repeating its final frame.
+    The caller supplies H3's maximum target frame count. Longer references are
+    clipped to that window, while shorter references keep their own duration
+    instead of repeating their final frame to fill the generated-video length.
     """
     if frames is None or frames.shape[0] <= 1:
         return frames
@@ -330,7 +366,11 @@ def _sample_video_frames(frames, source_fps, target_frames):
             indices = torch.linspace(0, source_end, target_frames).round().long()
             return frames[indices]
     else:
-        target_frames = requested
+        if source_fps > 0:
+            source_duration_frames = max(1, round(frames.shape[0] * 24 / source_fps))
+            target_frames = min(requested, source_duration_frames)
+        else:
+            target_frames = min(requested, frames.shape[0])
     if source_fps <= 0:
         source_indices = torch.arange(target_frames, dtype=torch.long)
     else:
@@ -338,10 +378,7 @@ def _sample_video_frames(frames, source_fps, target_frames):
         # 24fps cadence; 12fps -> 24fps repeats source frames at that cadence.
         source_indices = torch.floor(torch.arange(target_frames, dtype=torch.float32) * source_fps / 24).long()
     source_indices = source_indices.clamp(max=frames.shape[0] - 1)
-    sampled = frames[source_indices]
-    if sampled.shape[0] < target_frames:
-        sampled = torch.cat([sampled, sampled[-1:].repeat(target_frames - sampled.shape[0], 1, 1, 1)], dim=0)
-    return sampled[:target_frames]
+    return frames[source_indices][:target_frames]
 
 
 def _load_video_frames(value, target_frames):
@@ -415,7 +452,7 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                 # Match T8: 1 selects the first audio; 0 disables remapping.
                 _hidden_int("drive_audio_ordinal", 1, 0, 6),
                 _hidden_boolean("strict_prompt_tags", True),
-                _hidden_combo("ref_image_size", ["match", "max"], "match"),
+                _hidden_combo("ref_image_size", ["match", "1.2x", "1.5x", "2x", "max"], "match"),
                 # Keep this last so adding persistence does not shift legacy
                 # widgets_values positions for any existing input.
                 io.String.Input("gh_state_json", default="", optional=True, extra_dict={"hidden": True}),
@@ -492,12 +529,12 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
             if frames is not None:
                 ref_videos[f"ref_video_{i}"] = frames
                 if soundtrack is not None and f"ref_video_{i}" not in muted_video_slots:
-                    # Keep the audio reference on the same target timeline as
-                    # the resampled video, rather than letting a longer source
-                    # soundtrack extend the reference block's temporal span.
-                    effective_duration = calculate_length(duration_seconds) / 24.0
+                    # Keep paired audio on the reference video's own retained
+                    # timeline. A short reference must not grow to the target
+                    # generation duration through audio padding either.
+                    reference_duration = align_frame_count_down(int(frames.shape[0])) / 24.0
                     video_audio[f"ref_video_audio_{i}"] = _trim_audio_to_duration(
-                        soundtrack, effective_duration
+                        soundtrack, reference_duration
                     )
         audios = [
             _trim_audio_to_duration(
@@ -582,12 +619,16 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         effective_duration = length / 24.0
         final_audio = _trim_audio_to_duration(internal_drive_audio, effective_duration)
 
-        result = build_conditioning(
-            clip, video_vae, audio_vae, prompt, width, height, length,
-            "auto", audio_mode, audio_denoise_strength, True,
-            strict_prompt_tags, ref_image_size, internal_drive_audio, final_audio,
-            first, last, refs, ref_videos, video_audio, audios,
-        )
+        try:
+            result = build_conditioning(
+                clip, video_vae, audio_vae, prompt, width, height, length,
+                "auto", audio_mode, audio_denoise_strength, True,
+                strict_prompt_tags, ref_image_size, internal_drive_audio, final_audio,
+                first, last, refs, ref_videos, video_audio, audios,
+            )
+        finally:
+            _release_text_encoder(clip)
+            clip = None
         bundle = {
             "positive": result[0], "av_latent": result[1], "mux_audio": result[2],
             "conditioned_prompt": result[3], "media_map_json": result[4], "report": result[5],
