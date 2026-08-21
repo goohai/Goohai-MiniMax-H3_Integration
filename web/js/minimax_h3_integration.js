@@ -210,6 +210,7 @@ const DOM_TRANSLATIONS = {
     "Prompt optimizer API is not configured. Open settings now?": "尚未配置提示词优化 API，是否立即打开设置？",
     "Confirm": "确定",
     "Output language": "输出语言",
+    "Maximum output tokens": "最大输出 Tokens",
     "Optimization mode": "优化方式", "Online API": "在线 API", "Local vision model": "本地视觉模型",
     "Refresh local models": "刷新本地模型", "Local model": "本地模型", "Local device": "本地设备",
     "Search local models": "搜索本地模型", "Search models": "搜索模型", "No matching models": "没有匹配的模型",
@@ -464,7 +465,7 @@ function createPanel(node) {
       .ghh3-drop-title-row .ghh3-optional{position:static;display:inline-flex;align-items:center;height:1.2em;line-height:1.2}
       .ghh3-keygrid .ghh3-drop:not(.ghh3-audio-drop) .ghh3-drop-icon,.ghh3-keygrid .ghh3-drop:not(.ghh3-audio-drop) .ghh3-optional{transform:translateY(-1px)}
        .ghh3-prompt-wrap{position:relative;display:grid;grid-template-rows:22px minmax(0,1fr);width:100%;height:100%;min-height:0;background:#1d2731;border-radius:6px;overflow:hidden}.ghh3-prompt-wrap .ghh3-prompt{grid-row:2;border-radius:0 0 6px 6px}.ghh3-prompt-wrap.external .ghh3-prompt{opacity:.42;cursor:not-allowed}.ghh3-prompt-tools{grid-row:1;display:flex;align-items:center;justify-content:flex-end;gap:3px;padding:2px 5px;box-sizing:border-box;background:#1d2731;z-index:4}.ghh3-prompt-elapsed{display:none;margin-right:auto;color:#617684;font:9px/17px Arial,sans-serif}.ghh3-prompt-elapsed.visible{display:inline-block}.ghh3-optimizer-model{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:rgba(96,116,130,.6);font:8px/17px Arial,sans-serif;margin-left:auto;margin-right:17px}.ghh3-prompt-tool{height:17px;min-width:17px;padding:0 3px;border:0;border-radius:3px;background:#1d2731;color:#6f8291;font:11px/17px Arial,sans-serif;cursor:pointer;opacity:.72;flex:0 0 auto}.ghh3-optimize-tool{font-size:13px}.ghh3-prompt-tool:hover{color:#9aabb8;background:#24323e}.ghh3-prompt-tool:disabled{opacity:.25;cursor:not-allowed}.ghh3-prompt-reset{display:none;font-size:12px;line-height:15px}.ghh3-prompt-reset.visible{display:inline-block}.ghh3-prompt-loading{color:#0aa4d6!important;opacity:1!important;animation:ghh3-spin 1.6s linear infinite}@keyframes ghh3-spin{to{transform:rotate(360deg)}}.ghh3-tool-tip{position:fixed;z-index:10100;padding:4px 7px;border-radius:4px;background:#111a22;color:#cbd7df;border:1px solid #344753;font:10px/1.2 Arial,sans-serif;pointer-events:none;white-space:nowrap}.ghh3-opt-check{justify-self:end;width:auto!important}.ghh3-opt-language{display:grid;grid-template-columns:1fr 1fr;width:100%;align-items:center}.ghh3-opt-language label{display:flex;align-items:center;gap:4px;white-space:nowrap}.ghh3-opt-language label:first-child{justify-self:start}.ghh3-opt-language label:last-child{justify-self:end}.ghh3-opt-language input{width:auto}
-       .ghh3-prompt-wrap{grid-template-columns:minmax(0,1fr)}.ghh3-prompt-wrap .ghh3-prompt-rich{position:absolute;grid-row:auto;left:0;right:0;top:22px;bottom:0;width:100%;height:auto;min-height:0;max-height:none;z-index:2;overflow-x:hidden;overflow-y:auto;background:#1d2731;color:#e1e9ef;-webkit-text-fill-color:currentColor;caret-color:#e1e9ef;line-height:2.35;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;padding:7px 7px calc(7px + 14 * 1.4em)}.ghh3-prompt-rich.ghh3-prompt-empty:before{content:attr(data-placeholder);position:absolute;left:7px;right:7px;top:7px;color:#52616d;white-space:pre-wrap;pointer-events:none}.ghh3-prompt-highlight{display:none}.ghh3-prompt-rich mark{padding:0;color:#27d9e5;-webkit-text-fill-color:#27d9e5;background:transparent;font:inherit}.ghh3-prompt-section{padding:0;color:#168b99;-webkit-text-fill-color:#168b99;background:transparent;font:inherit}.ghh3-prompt-tag{display:inline-block;box-sizing:border-box;padding:1px 5px;margin:0 2px;border-radius:5px;background:#3b3b3b;color:#cdcdcd;-webkit-text-fill-color:#cdcdcd;font-size:.86em;line-height:1.35;vertical-align:middle;white-space:nowrap}.ghh3-prompt-media-token{display:inline-flex;align-items:center;vertical-align:middle;white-space:nowrap}.ghh3-prompt-media-preview{position:static;flex:0 0 26px;width:26px;height:26px;margin-left:.5em;margin-right:4px;box-sizing:border-box;border:1px solid rgba(91,124,143,.72);border-radius:5px;background:#14222d;object-fit:cover;color:#77a5b7;display:inline-flex;align-items:center;justify-content:center;font:14px/26px Arial,sans-serif;overflow:hidden;vertical-align:middle;user-select:none}.ghh3-prompt-media-preview.ghh3-prompt-audio-preview{border-radius:50%}.ghh3-prompt-media-preview.ghh3-prompt-audio-preview:before{content:"♫";font-size:13px}.ghh3-prompt-wrap.external .ghh3-prompt-rich{opacity:.42}
+       .ghh3-prompt-wrap{grid-template-columns:minmax(0,1fr)}.ghh3-prompt-wrap .ghh3-prompt-rich{position:absolute;grid-row:auto;left:0;right:0;top:22px;bottom:0;width:100%;height:auto;min-height:0;max-height:none;z-index:2;overflow-x:hidden;overflow-y:auto;background:#1d2731;color:#e1e9ef;-webkit-text-fill-color:currentColor;caret-color:#e1e9ef;line-height:2.35;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;padding:7px 7px calc(7px + 14 * 1.4em)}.ghh3-prompt-rich.ghh3-prompt-empty:before{content:attr(data-placeholder);position:absolute;left:7px;right:7px;top:7px;color:#52616d;white-space:pre-wrap;pointer-events:none}.ghh3-prompt-highlight{display:none}.ghh3-prompt-rich mark{padding:0;color:#27d9e5;-webkit-text-fill-color:#27d9e5;background:transparent;font:inherit}.ghh3-prompt-section{padding:0;color:#168b99;-webkit-text-fill-color:#168b99;background:transparent;font:inherit}.ghh3-prompt-tag{display:inline-block;box-sizing:border-box;padding:1px 5px;margin:0 2px;border-radius:5px;background:#3b3b3b;color:#cdcdcd;-webkit-text-fill-color:#cdcdcd;font-size:.86em;line-height:1.35;vertical-align:middle;white-space:nowrap}.ghh3-prompt-tag-video{background:#493f59}.ghh3-prompt-tag-picture{background:#31515a}.ghh3-prompt-media-token{display:inline-flex;align-items:center;vertical-align:middle;white-space:nowrap}.ghh3-prompt-media-preview{position:static;flex:0 0 26px;width:26px;height:26px;margin-left:.5em;margin-right:4px;box-sizing:border-box;border:1px solid rgba(91,124,143,.72);border-radius:5px;background:#14222d;object-fit:cover;color:#77a5b7;display:inline-flex;align-items:center;justify-content:center;font:14px/26px Arial,sans-serif;overflow:hidden;vertical-align:middle;user-select:none}.ghh3-prompt-media-preview.ghh3-prompt-audio-preview{border-radius:50%}.ghh3-prompt-media-preview.ghh3-prompt-audio-preview:before{content:"♫";font-size:13px}.ghh3-prompt-wrap.external .ghh3-prompt-rich{opacity:.42}
         .ghh3-opt-overlay{position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.58);font:12px Arial,sans-serif}.ghh3-opt-dialog{width:min(470px,calc(100vw - 30px));background:#17222c;color:#d7e3ec;border:1px solid #344958;border-radius:9px;box-shadow:0 18px 50px rgba(0,0,0,.5);padding:14px}.ghh3-opt-title{font-size:12px;margin-bottom:12px;white-space:nowrap}.ghh3-opt-row{display:grid;grid-template-columns:140px minmax(0,1fr);align-items:center;gap:8px;min-height:38px;margin:0}.ghh3-opt-row>span{white-space:nowrap}.ghh3-opt-row input,.ghh3-opt-row select{width:100%;box-sizing:border-box;background:#1d2b36;color:#dce7ee;border:1px solid #3a4d5b;border-radius:4px;padding:6px;font:inherit}.ghh3-opt-hidden{display:none!important}.ghh3-opt-model-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:7px;min-width:0}.ghh3-opt-model-native{display:none}.ghh3-opt-model-picker{width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;background:#1d2b36;color:#dce7ee;border:1px solid #3a4d5b;border-radius:4px;padding:6px 24px 6px 7px;cursor:pointer;position:relative;font:inherit}.ghh3-opt-model-picker:after{content:"⌄";position:absolute;right:7px}.ghh3-opt-model-menu{display:none;position:absolute;left:0;top:calc(100% + 4px);z-index:10070;box-sizing:border-box;width:max-content;min-width:100%;max-width:calc(100vw - 30px);padding:5px;background:#17222c;border:1px solid #3a4d5b;border-radius:5px;box-shadow:0 8px 22px rgba(0,0,0,.45)}.ghh3-opt-model-menu.open{display:block}.ghh3-opt-model-search{display:block;width:100%;min-width:100%;margin-bottom:5px;font:inherit}.ghh3-opt-model-results{max-height:285px;overflow:auto}.ghh3-opt-model-option{display:block;width:max-content;min-width:100%;border:0;background:transparent;color:#dce7ee;text-align:left;padding:6px;border-radius:3px;white-space:nowrap;cursor:pointer;font:inherit}.ghh3-opt-model-option:hover,.ghh3-opt-model-option.selected{background:#274252}.ghh3-opt-model-empty{padding:7px;color:#8294a2;font-size:12px}.ghh3-opt-refresh{display:flex;align-items:center;justify-content:center;width:30px;height:30px;margin:0;background:#1d2b36;color:#cbd8e0;border:1px solid #3a4d5b;border-radius:4px;padding:0;cursor:pointer;font-size:16px;line-height:1;white-space:nowrap;transition:background .12s,color .12s,border-color .12s}.ghh3-opt-refresh:hover{background:#263b49;border-color:#4c6879;color:#e4f1f5}.ghh3-opt-refresh:active{background:#17535a;border-color:#2a7c85;color:#fff}.ghh3-opt-refresh.loading{background:#17535a;border-color:#2a7c85;color:#42d8e5;cursor:wait}.ghh3-opt-refresh.loading svg{animation:ghh3-spin 1.2s linear infinite}.ghh3-opt-refresh:disabled{opacity:.85}.ghh3-opt-dependencies{margin:6px 0;color:#d98d97;font-size:12px;line-height:1.35}.ghh3-opt-checks{margin:0}.ghh3-opt-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:28px}.ghh3-opt-actions button{border:1px solid #3a4d5b;border-radius:4px;background:#1d2b36;color:#cbd8e0;padding:5px 12px;cursor:pointer}.ghh3-opt-actions button:last-child{background:#17535a;border-color:#26717a;color:#e0f2f2}.ghh3-opt-custom{display:none}.ghh3-opt-dialog.custom .ghh3-opt-custom{display:grid}
         .ghh3-audio-trim-button,.ghh3-sound{position:absolute;z-index:6;width:14px;height:14px;padding:0;border:0;border-radius:50%;background:rgba(34,52,65,.52)!important;color:#fff;font:9px/14px Arial,sans-serif;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s ease}.ghh3-audio-trim-button{right:3px;top:3px}.ghh3-audio-card .ghh3-audio-trim-button{right:40px;top:4px}.ghh3-sound{right:2px;top:2px}.ghh3-card:hover .ghh3-audio-trim-button,.ghh3-card:hover .ghh3-sound,.ghh3-audio-trim-button:focus-visible,.ghh3-sound:focus-visible{opacity:1;pointer-events:auto}.ghh3-audio-trim-button:hover,.ghh3-sound:hover{color:#fff;background:rgba(45,75,88,.66)!important}
         .ghh3-trim-overlay{position:fixed;inset:0;z-index:10200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.64);font:12px Arial,sans-serif}.ghh3-trim-dialog{width:min(720px,calc(100vw - 30px));box-sizing:border-box;padding:15px;background:#17222c;color:#d7e3ec;border:1px solid #365161;border-radius:9px;box-shadow:0 18px 52px rgba(0,0,0,.55)}.ghh3-trim-title{font-size:13px;margin-bottom:12px}.ghh3-trim-wave-wrap{position:relative;width:100%;height:190px;overflow:hidden;border:1px solid #324b5b;border-radius:6px;background:#0d1720;cursor:crosshair;touch-action:none}.ghh3-trim-wave-wrap.ghh3-trim-panning{cursor:grabbing}.ghh3-trim-wave{display:block;width:100%;height:100%}.ghh3-trim-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#7f94a3;background:#0d1720}.ghh3-trim-times{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.ghh3-trim-time{position:relative;padding:7px 9px;border-radius:5px;background:#1d2b36;color:#9fb0bc}.ghh3-trim-time strong{display:block;margin-top:3px;color:#e2edf3;font-size:13px;font-weight:500}.ghh3-trim-sync{position:absolute;right:6px;top:5px;border:1px solid #466474;border-radius:4px;background:#223744;color:#b8d2dc;padding:2px 7px;font:12px/16px Arial,sans-serif;cursor:pointer;box-shadow:inset 0 1px rgba(255,255,255,.04)}.ghh3-trim-sync:hover{background:#2a4a58;border-color:#5b8091;color:#d9f0f4}.ghh3-trim-controls{display:flex;align-items:center;gap:8px;margin-top:12px}.ghh3-trim-preview{display:flex;align-items:center;justify-content:center;width:30px;height:28px;border:1px solid #3a5363;border-radius:4px;background:#1d2b36;color:#dce7ee;padding:0;cursor:pointer}.ghh3-trim-preview svg{width:12px;height:12px}.ghh3-trim-hint{color:#778b99;font-size:10px}.ghh3-trim-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}.ghh3-trim-actions button{border:1px solid #3a5363;border-radius:4px;background:#1d2b36;color:#dce7ee;padding:6px 14px;cursor:pointer}.ghh3-trim-actions button:last-child{background:#17535a;border-color:#26717a;color:#e8f6f6}.ghh3-trim-actions button:disabled,.ghh3-trim-preview:disabled{opacity:.45;cursor:not-allowed}
@@ -876,7 +877,9 @@ function createPanel(node) {
                 preview.contentEditable = "false";
                 token.appendChild(preview);
             }
-            const tag = make("span"); tag.className = "ghh3-prompt-tag"; tag.textContent = decoration.raw;
+            const tag = make("span");
+            tag.className = `ghh3-prompt-tag ghh3-prompt-tag-${type}`;
+            tag.textContent = decoration.raw;
             token.appendChild(tag);
             prompt.appendChild(token);
             cursor = decoration.end;
@@ -945,7 +948,7 @@ function createPanel(node) {
             .replace(/^doubao(?=[-_.\d])/i, "Doubao")
             .replace(/^minimax(?=[-_.\d])/i, "MiniMax");
         const providerName = ({
-            runninghub: "RunningHub", openai: "OpenAI", gemini: "Google Gemini",
+            runninghub: "RunningHub 国内版", runninghub_overseas: "RunningHub 海外版", openai: "OpenAI", gemini: "Google Gemini",
             openrouter: "OpenRouter", dashscope: "阿里云百炼", siliconflow: "SiliconFlow",
             custom: "API",
         })[optimizerSettings.provider] || "API";
@@ -1655,7 +1658,8 @@ function nodeColorToCss(value) {
         }
     }
     const optimizerProviders = {
-        runninghub: { label: "RunningHub（推荐）", url: "https://www.runninghub.cn/openapi/v2", model: "openai/gpt-5.6-sol", protocol: "runninghub" },
+        runninghub: { label: "RunningHub 国内版（推荐）", url: "https://www.runninghub.cn/openapi/v2", model: "openai/gpt-5.6-sol", protocol: "runninghub" },
+        runninghub_overseas: { label: "RunningHub 海外版", url: "https://www.runninghub.ai/openapi/v2", model: "openai/gpt-5.6-sol", protocol: "runninghub" },
         openai: { label: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-4.1-mini", protocol: "openai" },
         gemini: { label: "Google Gemini", url: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash", protocol: "gemini" },
         openrouter: { label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "google/gemini-2.5-flash", protocol: "openai" },
@@ -1663,7 +1667,38 @@ function nodeColorToCss(value) {
         siliconflow: { label: "SiliconFlow", url: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-VL-72B-Instruct", protocol: "openai" },
         custom: { label: t("Custom"), url: "", model: "", protocol: "openai" },
     };
+    const migrateProviderApiKeys = settings => {
+        if (!settings) return settings;
+        const provider = String(settings.provider || "runninghub").toLowerCase();
+        const apiKeys = settings.api_keys && typeof settings.api_keys === "object"
+            ? { ...settings.api_keys }
+            : {};
+        const legacyKey = String(settings.api_key || "");
+        // Legacy workflows had one shared key. Assign it only to the provider
+        // that was selected when the workflow was saved; never copy a CN key
+        // into the overseas account or vice versa.
+        if (legacyKey && !apiKeys[provider]) apiKeys[provider] = legacyKey;
+        const activeKey = String(apiKeys[provider] || "");
+        const providerModels = settings.provider_models && typeof settings.provider_models === "object"
+            ? { ...settings.provider_models }
+            : {};
+        // Older workflows only stored the currently active model. Migrate it
+        // to the selected provider without copying that choice to the other
+        // RunningHub region.
+        const legacyModel = String(settings.model || "");
+        if (legacyModel && !providerModels[provider]) providerModels[provider] = legacyModel;
+        const activeModel = String(providerModels[provider] || legacyModel || optimizerProviders[provider]?.model || "");
+        return {
+            ...settings,
+            api_keys: apiKeys,
+            api_key: activeKey,
+            has_api_key: !!activeKey,
+            provider_models: providerModels,
+            model: activeModel,
+        };
+    };
     const migrateLegacyOptimizerDefault = settings => {
+        settings = migrateProviderApiKeys(settings);
         if (!settings || settings.mode === "local") return settings;
         const provider = String(settings.provider || "").toLowerCase();
         const model = String(settings.model || "").toLowerCase();
@@ -1674,7 +1709,7 @@ function nodeColorToCss(value) {
             && (!apiUrl || apiUrl === "https://api.openai.com/v1")
             && !hasKey;
         if (!legacyDefault) return settings;
-        return {
+        return migrateProviderApiKeys({
             ...settings,
             mode: "api",
             provider: "runninghub",
@@ -1683,7 +1718,7 @@ function nodeColorToCss(value) {
             protocol: optimizerProviders.runninghub.protocol,
             api_key: "",
             has_api_key: false,
-        };
+        });
     };
     async function fetchOptimizerJson(path, options = {}, retryEmpty = true) {
         const response = await api.fetchApi(path, options);
@@ -1702,6 +1737,7 @@ function nodeColorToCss(value) {
     async function loadOptimizerSettings() {
         if (optimizerSettings) {
             if (!Array.isArray(optimizerSettings.runninghub_models) || !optimizerSettings.runninghub_models.length
+                || !Array.isArray(optimizerSettings.runninghub_overseas_models) || !optimizerSettings.runninghub_overseas_models.length
                 || !Array.isArray(optimizerSettings.mmproj_models) || !optimizerSettings.mmproj_models.length) {
                 try {
                     const defaults = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/config`, { cache: "no-store" });
@@ -1709,6 +1745,7 @@ function nodeColorToCss(value) {
                         ...defaults,
                         ...optimizerSettings,
                         runninghub_models: defaults.runninghub_models || [],
+                        runninghub_overseas_models: defaults.runninghub_overseas_models || [],
                         models: optimizerSettings.models || defaults.models || [],
                         mmproj_models: optimizerSettings.mmproj_models || defaults.mmproj_models || [],
                         missing_dependencies: optimizerSettings.missing_dependencies || defaults.missing_dependencies || [],
@@ -1718,6 +1755,7 @@ function nodeColorToCss(value) {
                     optimizerSettings = {
                         ...optimizerSettings,
                         runninghub_models: optimizerSettings.runninghub_models || [],
+                        runninghub_overseas_models: optimizerSettings.runninghub_overseas_models || [],
                         models: optimizerSettings.models || [],
                         mmproj_models: optimizerSettings.mmproj_models || [],
                         missing_dependencies: optimizerSettings.missing_dependencies || [],
@@ -1745,7 +1783,11 @@ function nodeColorToCss(value) {
             const provider = row("Provider", make("select"));
             for (const [value, preset] of Object.entries(optimizerProviders)) provider.append(new Option(preset.label, value));
             provider.value = current.provider || "runninghub";
-            const key = row("API key", make("input")); key.type = "password"; key.value = current.api_key || "";
+            const providerApiKeys = { ...(current.api_keys || {}) };
+            if (current.api_key && !providerApiKeys[current.provider || "runninghub"]) providerApiKeys[current.provider || "runninghub"] = current.api_key;
+            const providerModels = { ...(current.provider_models || {}) };
+            if (current.model && !providerModels[current.provider || "runninghub"]) providerModels[current.provider || "runninghub"] = current.model;
+            const key = row("API key", make("input")); key.type = "password"; key.value = providerApiKeys[provider.value] || "";
             const readMedia = make("input"); readMedia.type = "checkbox"; readMedia.checked = current.read_media !== false; readMedia.className = "ghh3-opt-check";
             const language = make("div"); language.className = "ghh3-opt-language";
             for (const value of ["English", "中文"]) {
@@ -1768,7 +1810,11 @@ function nodeColorToCss(value) {
             const runninghubModelResults = make("div"); runninghubModelResults.className = "ghh3-opt-model-results";
             runninghubModelMenu.append(runninghubModelSearch, runninghubModelResults); runninghubModelGroup.append(runninghubModelMenu);
             row("Model", runninghubModelGroup);
-            let runninghubModels = current.runninghub_models || [];
+            const runninghubModelsByProvider = {
+                runninghub: [...(current.runninghub_models || [])],
+                runninghub_overseas: [...(current.runninghub_overseas_models || current.runninghub_models || [])],
+            };
+            let runninghubModels = runninghubModelsByProvider[provider.value] || [];
             const fillRunninghubModels = (models = runninghubModels, preserveValue = runninghubModel.value || current.model || "openai/gpt-5.6-sol") => {
                 runninghubModels = models || [];
                 runninghubModel.replaceChildren(...runninghubModels.map(value => new Option(value, value)));
@@ -1777,7 +1823,7 @@ function nodeColorToCss(value) {
                 refreshRunninghubModelPicker(); renderRunninghubModels();
             };
             for (const value of runninghubModels) runninghubModel.append(new Option(value, value));
-            runninghubModel.value = current.provider === "runninghub" && current.model ? current.model : "openai/gpt-5.6-sol";
+            runninghubModel.value = providerModels[provider.value] || "openai/gpt-5.6-sol";
             const refreshRunninghubModelPicker = () => { runninghubModelPicker.textContent = runninghubModel.value || ""; };
             const renderRunninghubModels = () => {
                 const keyword = runninghubModelSearch.value.trim().toLowerCase();
@@ -1812,6 +1858,14 @@ function nodeColorToCss(value) {
             const localMmproj = row("Vision model (mmproj)", make("select"));
             const localDevice = row("Local device", make("select")); localDevice.append(new Option("Auto", "auto"), new Option("GPU", "cuda"), new Option("CPU", "cpu")); localDevice.value = current.local_device || "cuda";
             const dependencyStatus = make("div"); dependencyStatus.className = "ghh3-opt-dependencies"; dialog.append(dependencyStatus);
+            const maxTokens = row("Maximum output tokens", make("input"));
+            maxTokens.type = "number"; maxTokens.min = "512"; maxTokens.max = "8192"; maxTokens.step = "512";
+            maxTokens.value = String(Math.max(512, Math.min(8192, Number(current.max_tokens) || 4096)));
+            const normalizeMaxTokens = () => {
+                const value = Number.parseInt(maxTokens.value, 10);
+                maxTokens.value = String(Math.max(512, Math.min(8192, Number.isFinite(value) ? value : 4096)));
+            };
+            maxTokens.addEventListener("change", normalizeMaxTokens);
             row("Output language", language);
             const checkboxRows = make("div"); checkboxRows.className = "ghh3-opt-checks";
             const checkboxRow = (label, control) => { const wrap = make("label"); wrap.className = "ghh3-opt-row"; wrap.append(make("span", {}, t(label)), control); checkboxRows.append(wrap); };
@@ -1886,9 +1940,16 @@ function nodeColorToCss(value) {
                 finally { button.classList.remove("loading"); button.disabled = false; }
             };
             refreshRunninghubModels.onclick = () => withRefreshState(refreshRunninghubModels, async () => {
-                const data = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/runninghub-models`, { cache: "no-store" });
-                fillRunninghubModels(data.runninghub_models);
-                optimizerSettings = { ...(optimizerSettings || current), runninghub_models: [...runninghubModels] };
+                const selectedProvider = provider.value === "runninghub_overseas" ? "runninghub_overseas" : "runninghub";
+                const data = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/runninghub-models?provider=${encodeURIComponent(selectedProvider)}`, { cache: "no-store" });
+                const refreshed = selectedProvider === "runninghub_overseas" ? data.runninghub_overseas_models : data.runninghub_models;
+                runninghubModelsByProvider[selectedProvider] = [...(refreshed || [])];
+                fillRunninghubModels(runninghubModelsByProvider[selectedProvider]);
+                optimizerSettings = {
+                    ...(optimizerSettings || current),
+                    runninghub_models: [...runninghubModelsByProvider.runninghub],
+                    runninghub_overseas_models: [...runninghubModelsByProvider.runninghub_overseas],
+                };
             }).catch(error => alert(error.message));
             refreshModels.onclick = () => withRefreshState(refreshModels, async () => {
                 const data = await fetchOptimizerJson(`${OPTIMIZER_ROUTE}/models`, { cache: "no-store" });
@@ -1909,7 +1970,7 @@ function nodeColorToCss(value) {
             if (!current.models) refreshModels.click();
             const sync = () => {
                 const custom = provider.value === "custom";
-                const runninghub = provider.value === "runninghub";
+                const runninghub = provider.value === "runninghub" || provider.value === "runninghub_overseas";
                 dialog.classList.toggle("custom", custom);
                 const local = mode.value === "local";
                 dialog.classList.toggle("local", local);
@@ -1926,15 +1987,32 @@ function nodeColorToCss(value) {
                 if (!custom) { url.value = preset.url; model.value = preset.model; protocol.value = preset.protocol; }
             };
             url.value = current.api_url || ""; model.value = current.model || ""; protocol.value = current.protocol || "openai";
-            provider.addEventListener("change", sync); mode.addEventListener("change", sync); sync();
+            provider.addEventListener("change", () => {
+                const previousProvider = provider.dataset.previousValue || current.provider || "runninghub";
+                providerApiKeys[previousProvider] = key.value;
+                if (previousProvider === "runninghub" || previousProvider === "runninghub_overseas") {
+                    providerModels[previousProvider] = runninghubModel.value;
+                }
+                key.value = providerApiKeys[provider.value] || "";
+                provider.dataset.previousValue = provider.value;
+                if (provider.value === "runninghub" || provider.value === "runninghub_overseas") {
+                    const preserve = providerModels[provider.value] || optimizerProviders[provider.value].model;
+                    fillRunninghubModels(runninghubModelsByProvider[provider.value] || [], preserve);
+                }
+                sync();
+            }); mode.addEventListener("change", sync); sync();
+            provider.dataset.previousValue = provider.value;
             const actions = make("div"); actions.className = "ghh3-opt-actions";
             const cancel = make("button", {}, t("Cancel")); const save = make("button", {}, t("Save")); actions.append(cancel, save); dialog.append(actions);
             const close = () => overlay.remove(); cancel.onclick = close; overlay.addEventListener("pointerdown", event => { if (event.target === overlay) close(); });
             save.onclick = async () => {
                 const outputLanguage = language.querySelector("input:checked")?.value || "中文";
                 const preset = optimizerProviders[provider.value];
-                const selectedModel = provider.value === "runninghub" ? runninghubModel.value : model.value;
-                const body = { mode: mode.value, provider: provider.value, api_url: provider.value === "custom" ? url.value : preset?.url || url.value, model: selectedModel, protocol: provider.value === "custom" ? protocol.value : preset?.protocol || protocol.value, read_media: readMedia.checked, output_language: outputLanguage, local_model: localModel.value, local_mmproj: localMmproj.value, local_device: localDevice.value, auto_optimize: autoOptimize.checked };
+                const selectedModel = (provider.value === "runninghub" || provider.value === "runninghub_overseas") ? runninghubModel.value : model.value;
+                providerApiKeys[provider.value] = key.value;
+                providerModels[provider.value] = selectedModel;
+                normalizeMaxTokens();
+                const body = { mode: mode.value, provider: provider.value, api_url: provider.value === "custom" ? url.value : preset?.url || url.value, model: selectedModel, protocol: provider.value === "custom" ? protocol.value : preset?.protocol || protocol.value, read_media: readMedia.checked, output_language: outputLanguage, local_model: localModel.value, local_mmproj: localMmproj.value, local_device: localDevice.value, max_tokens: Number(maxTokens.value), auto_optimize: autoOptimize.checked, api_keys: { ...providerApiKeys }, provider_models: { ...providerModels } };
                 body.api_key = key.value;
                 body.has_api_key = !!key.value;
                 optimizerSettings = body; refreshOptimizerName(); refreshPromptConnection(); persistState(); close();
@@ -2012,7 +2090,7 @@ function nodeColorToCss(value) {
     }
     async function optimizerMediaPayload(specs) {
         const payload = [];
-        const runninghub = optimizerSettings?.mode !== "local" && optimizerSettings?.provider === "runninghub";
+        const runninghub = optimizerSettings?.mode !== "local" && ["runninghub", "runninghub_overseas"].includes(optimizerSettings?.provider);
         let runninghubImages = 0;
         let runninghubVideo = false;
         for (const spec of specs) {
@@ -2151,15 +2229,17 @@ function nodeColorToCss(value) {
             let data;
             try {
                 const requestBody = { request_id: optimizerRequestId, prompt: before, task, duration, media: mediaPayload, context: taskContext, config: optimizerSettings };
-                if (!local && optimizerSettings?.provider === "runninghub") {
-                    data = await runRunningHubOptimization(requestBody, optimizerAbort.signal);
-                } else {
-                    response = await api.fetchApi(`${OPTIMIZER_ROUTE}/optimize`, { method: "POST", signal: optimizerAbort.signal, body: new Blob([JSON.stringify(requestBody)], { type: "application/json" }) });
-                    const text = await response.text();
-                    try { data = JSON.parse(text); }
-                    catch { throw new Error(/^\s*(?:<!doctype\s+html|<html)/i.test(text) ? "云端网关返回了网页而不是节点数据" : "提示词优化接口返回了无效数据"); }
-                    if (!response.ok) throw new Error(data.error || "Prompt optimization failed");
-                }
+                // RunningHub must use the single-request endpoint. Its hosted
+                // reverse proxy may route separate /start and /status calls to
+                // different workers, while the in-process async job registry
+                // only exists in the worker that received /start. The direct
+                // endpoint keeps the RH polling loop on one request and matches
+                // the stable pre-async behavior.
+                response = await api.fetchApi(`${OPTIMIZER_ROUTE}/optimize`, { method: "POST", signal: optimizerAbort.signal, body: new Blob([JSON.stringify(requestBody)], { type: "application/json" }) });
+                const text = await response.text();
+                try { data = JSON.parse(text); }
+                catch { throw new Error(/^\s*(?:<!doctype\s+html|<html)/i.test(text) ? "云端网关返回了网页而不是节点数据" : "提示词优化接口返回了无效数据"); }
+                if (!response.ok) throw new Error(data.error || "Prompt optimization failed");
             } finally { clearTimeout(timeout); }
             optimizerCache = { contextSignature, originalPrompt: before, result: data.prompt }; applyOptimizedPrompt(data.prompt, before, optimizationMode); playOptimizerCompleteSound();
             return true;

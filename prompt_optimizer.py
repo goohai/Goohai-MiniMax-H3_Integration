@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "local_model": "",
     "local_mmproj": "",
     "local_device": "cuda",
+    "max_tokens": 4096,
     "auto_optimize": False,
 }
 PROVIDERS = {
@@ -44,8 +45,28 @@ PROVIDERS = {
     "dashscope": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-vl-max", "openai"),
     "siliconflow": ("https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-VL-72B-Instruct", "openai"),
     "runninghub": ("https://www.runninghub.cn/openapi/v2", "openai/gpt-5.6-sol", "runninghub"),
+    "runninghub_overseas": ("https://www.runninghub.ai/openapi/v2", "openai/gpt-5.6-sol", "runninghub"),
 }
 RUNNINGHUB_APP_ID = "2089252473927196673"
+RUNNINGHUB_OVERSEAS_APP_ID = "2090668262521675778"
+RUNNINGHUB_APP_NODES = {
+    "runninghub": {
+        "video": "11",
+        "images": ("2", "12", "13", "14", "15", "16", "17", "18"),
+        "model": "1",
+        "system_prompt": "9",
+        "user_prompt": "10",
+        "max_tokens": "19",
+    },
+    "runninghub_overseas": {
+        "video": "11",
+        "images": ("20", "12", "13", "14", "15", "16", "17", "18"),
+        "model": "1",
+        "system_prompt": "10",
+        "user_prompt": "9",
+        "max_tokens": "21",
+    },
+}
 RUNNINGHUB_MODELS = (
     "openai/gpt-5.6-sol", "openai/gpt-5.6-sol-saver", "openai/gpt-5.6-terra",
     "openai/gpt-5.6-terra-saver", "openai/gpt-5.5", "openai/gpt-5.5-saver",
@@ -71,12 +92,14 @@ RUNNINGHUB_MODELS = (
     "google/gemini-3.5-flash-lite", "google/gemini-3.6-flash",
 )
 RUNNINGHUB_DETAIL_URL = f"https://www.runninghub.cn/call-api/api-detail/{RUNNINGHUB_APP_ID}?apiType=4"
+RUNNINGHUB_OVERSEAS_DETAIL_URL = f"https://www.runninghub.ai/zh-cn/call-api/api-detail/{RUNNINGHUB_OVERSEAS_APP_ID}?apiType=4"
 _RUNNINGHUB_MODELS_CACHE: tuple[str, ...] = RUNNINGHUB_MODELS
+_RUNNINGHUB_OVERSEAS_MODELS_CACHE: tuple[str, ...] = RUNNINGHUB_MODELS
 _RUNNINGHUB_MODELS_LOCK = asyncio.Lock()
 _ROUTES_REGISTERED = False
 _ACTIVE_REQUESTS: dict[str, asyncio.Task] = {}
 _ACTIVE_CANCEL_EVENTS: dict[str, threading.Event] = {}
-_ACTIVE_RH_TASKS: dict[str, tuple[str, str]] = {}
+_ACTIVE_RH_TASKS: dict[str, tuple[str, str, str]] = {}
 _ASYNC_OPTIMIZER_JOBS: dict[str, asyncio.Task] = {}
 _GGUF_LOCK = threading.RLock()
 _GGUF_MODEL = None
@@ -226,18 +249,37 @@ def _normalize_config(data: dict | None) -> dict:
     data = data if isinstance(data, dict) else {}
     provider = str(data.get("provider") or current["provider"]).lower()
     preset = PROVIDERS.get(provider)
+    api_keys = data.get("api_keys") if isinstance(data.get("api_keys"), dict) else {}
+    # RunningHub CN and overseas accounts use different API keys. Prefer the
+    # key saved for the selected provider so a stale generic api_key cannot be
+    # sent to the other region after switching platforms or restoring a
+    # workflow. Keep the legacy api_key fallback for older saved workflows.
+    provider_api_key = api_keys.get(provider)
+    api_key = provider_api_key if provider_api_key is not None else (
+        data.get("api_key") if "api_key" in data else current["api_key"]
+    )
+    provider_models = data.get("provider_models") if isinstance(data.get("provider_models"), dict) else {}
+    provider_model = provider_models.get(provider)
+    try:
+        max_tokens = int(data.get("max_tokens", current.get("max_tokens", 4096)))
+    except (TypeError, ValueError):
+        max_tokens = 4096
+    max_tokens = max(512, min(8192, max_tokens))
     config = {
         "mode": "local" if str(data.get("mode") or current.get("mode") or "api").lower() == "local" else "api",
         "provider": provider,
         "api_url": str(data.get("api_url") or (preset[0] if preset else current["api_url"])).strip(),
-        "api_key": str(data.get("api_key") if "api_key" in data else current["api_key"]),
-        "model": str(data.get("model") or (preset[1] if preset else current["model"])).strip(),
+        "api_key": str(api_key or ""),
+        "api_keys": {str(key): str(value or "") for key, value in api_keys.items()},
+        "model": str(provider_model or data.get("model") or (preset[1] if preset else current["model"])).strip(),
+        "provider_models": {str(key): str(value or "") for key, value in provider_models.items()},
         "protocol": str(data.get("protocol") or (preset[2] if preset else current["protocol"])).lower(),
         "read_media": bool(data.get("read_media", current["read_media"])),
         "output_language": "中文" if str(data.get("output_language") or current.get("output_language") or "中文").lower() in {"中文", "chinese", "zh"} else "English",
         "local_model": str(data.get("local_model") or current.get("local_model") or "").strip(),
         "local_mmproj": str(data.get("local_mmproj") or current.get("local_mmproj") or "").strip(),
         "local_device": str(data.get("local_device") or current.get("local_device") or "cuda").lower(),
+        "max_tokens": max_tokens,
         "auto_optimize": bool(data.get("auto_optimize", current.get("auto_optimize", False))),
     }
     return config
@@ -249,6 +291,7 @@ def _public_config(config: dict) -> dict:
         "api_key": "",
         "has_api_key": bool(config.get("api_key")),
         "runninghub_models": list(_RUNNINGHUB_MODELS_CACHE),
+        "runninghub_overseas_models": list(_RUNNINGHUB_OVERSEAS_MODELS_CACHE),
     }
 
 
@@ -283,18 +326,23 @@ def _runninghub_models_from_page(html: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(max(candidates, key=len)))
 
 
-async def _refresh_runninghub_models() -> tuple[str, ...]:
-    global _RUNNINGHUB_MODELS_CACHE
+async def _refresh_runninghub_models(provider: str = "runninghub") -> tuple[str, ...]:
+    global _RUNNINGHUB_MODELS_CACHE, _RUNNINGHUB_OVERSEAS_MODELS_CACHE
+    overseas = provider == "runninghub_overseas"
+    detail_url = RUNNINGHUB_OVERSEAS_DETAIL_URL if overseas else RUNNINGHUB_DETAIL_URL
     async with _RUNNINGHUB_MODELS_LOCK:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(RUNNINGHUB_DETAIL_URL) as response:
+            async with session.get(detail_url) as response:
                 if response.status != 200:
                     raise RuntimeError(f"RunningHub model list returned HTTP {response.status}")
                 models = _runninghub_models_from_page(await response.text())
                 if not models:
                     raise RuntimeError("RunningHub model list was not found in the application detail")
-                _RUNNINGHUB_MODELS_CACHE = models
+                if overseas:
+                    _RUNNINGHUB_OVERSEAS_MODELS_CACHE = models
+                else:
+                    _RUNNINGHUB_MODELS_CACHE = models
                 return models
 
 
@@ -343,7 +391,8 @@ async def _runninghub_video(source_name: str, duration: float, output_path: Path
 
 
 async def _runninghub_upload(session: aiohttp.ClientSession, api_key: str, *, path: Path | None = None,
-                             data_url: str | None = None, filename: str = "reference.jpg") -> str:
+                             data_url: str | None = None, filename: str = "reference.jpg",
+                             api_base: str = "https://www.runninghub.cn/openapi/v2") -> str:
     form = aiohttp.FormData()
     if path is not None:
         form.add_field("file", path.read_bytes(), filename=path.name, content_type="video/mp4")
@@ -355,7 +404,7 @@ async def _runninghub_upload(session: aiohttp.ClientSession, api_key: str, *, pa
         except Exception as error:
             raise ValueError("RunningHub 参考图片数据无效") from error
     async with session.post(
-        "https://www.runninghub.cn/openapi/v2/media/upload/binary",
+        f"{api_base}/media/upload/binary",
         headers={"Authorization": f"Bearer {api_key}"}, data=form,
     ) as response:
         body = await response.text()
@@ -371,13 +420,13 @@ async def _runninghub_upload(session: aiohttp.ClientSession, api_key: str, *, pa
     return str(value)
 
 
-async def _runninghub_cancel(api_key: str, task_id: str) -> None:
+async def _runninghub_cancel(api_key: str, task_id: str, host: str = "https://www.runninghub.cn") -> None:
     if not api_key or not task_id:
         return
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            "https://www.runninghub.cn/task/openapi/cancel",
+            f"{host}/task/openapi/cancel",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"apiKey": api_key, "taskId": task_id},
         ) as response:
@@ -612,7 +661,7 @@ def _local_generate_impl(config: dict, payload: dict) -> str:
         inputs = {key: value.to(input_device) if hasattr(value, "to") else value for key, value in inputs.items()}
         with torch.inference_mode():
             output = model.generate(
-                **inputs, max_new_tokens=4096, do_sample=False,
+                **inputs, max_new_tokens=int(config.get("max_tokens") or 4096), do_sample=False,
                 stopping_criteria=StoppingCriteriaList([CancelledStoppingCriteria()]),
             )
         if cancel_event and cancel_event.is_set():
@@ -690,7 +739,7 @@ def _gguf_generate(config: dict, payload: dict) -> str:
         with _GGUF_LOCK:
             result = _GGUF_MODEL.create_chat_completion(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-                max_tokens=4096, temperature=0.2, top_p=0.9,
+                max_tokens=int(config.get("max_tokens") or 4096), temperature=0.2, top_p=0.9,
             )
         if cancel_event and cancel_event.is_set():
             raise RuntimeError("提示词优化已取消")
@@ -1146,10 +1195,30 @@ def _ensure_fl2va_picture_labels(text: str, task: str, duration: float, output_l
 
 def _extract_openai(data: dict) -> str:
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        message = choice["message"]
+        content = message.get("content")
         if isinstance(content, list):
-            return "".join(str(item.get("text") or "") for item in content if isinstance(item, dict)).strip()
-        return str(content).strip()
+            text = "".join(
+                str((item.get("text") or {}).get("value") if isinstance(item.get("text"), dict) else item.get("text") or "")
+                for item in content if isinstance(item, dict)
+            ).strip()
+        else:
+            text = str(content or "").strip()
+        if text:
+            return text
+        finish_reason = str(choice.get("finish_reason") or "unknown")
+        reasoning = str(message.get("reasoning_content") or "").strip()
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+        reasoning_tokens = details.get("reasoning_tokens")
+        if reasoning or reasoning_tokens:
+            raise RuntimeError(
+                "API 请求已完成，但模型仅返回了推理内容，没有最终提示词"
+                f"（finish_reason={finish_reason}, reasoning_tokens={reasoning_tokens or 'unknown'}）。"
+                "请关闭模型思考模式或提高输出 token 上限。"
+            )
+        raise RuntimeError(f"API 请求成功但返回内容为空（finish_reason={finish_reason}）")
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("The API returned no optimized prompt")
 
@@ -1191,6 +1260,7 @@ def _request_parts(config: dict, payload: dict):
         user_prompt,
     )
     parts = _user_parts(user_prompt, media, bool(config.get("read_media")))
+    max_tokens = max(512, min(8192, int(config.get("max_tokens") or 4096)))
     headers = {"Content-Type": "application/json"}
     if config["protocol"] == "gemini":
         gemini_parts = []
@@ -1205,7 +1275,7 @@ def _request_parts(config: dict, payload: dict):
         body = {
             "system_instruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": gemini_parts}],
-            "generationConfig": {"temperature": 0.35, "maxOutputTokens": 2048},
+            "generationConfig": {"temperature": 0.35, "maxOutputTokens": max_tokens},
         }
         url = _endpoint(config)
         separator = "&" if "?" in url else "?"
@@ -1226,7 +1296,7 @@ def _request_parts(config: dict, payload: dict):
             "instructions": system,
             "input": [{"role": "user", "content": response_parts}],
             "temperature": 0.35,
-            "max_output_tokens": 2048,
+            "max_output_tokens": max_tokens,
         }
         headers["Authorization"] = f"Bearer {config['api_key']}"
         url = _endpoint(config)
@@ -1234,12 +1304,24 @@ def _request_parts(config: dict, payload: dict):
         body = {
             "model": config["model"],
             "temperature": 0.35,
-            "max_tokens": 2048,
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": parts},
             ],
         }
+        # SiliconFlow reasoning models may consume the whole output budget in
+        # reasoning_content and return an empty final content while still
+        # charging for a successful request. Prompt optimization needs the
+        # final answer only, so explicitly disable thinking on this compatible
+        # endpoint. Unsupported models ignore or accept this documented field.
+        api_host = urllib.parse.urlparse(str(config.get("api_url") or "")).hostname or ""
+        model_name = str(config.get("model") or "").lower()
+        siliconflow_thinking_model = any(marker in model_name for marker in (
+            "qwen3", "deepseek", "glm-4.5", "glm-4.6", "glm-4.7", "glm-5", "hunyuan-a13b",
+        ))
+        if api_host.lower() == "api.siliconflow.cn" and siliconflow_thinking_model:
+            body["enable_thinking"] = False
         headers["Authorization"] = f"Bearer {config['api_key']}"
         url = _endpoint(config)
     return url, headers, body
@@ -1247,6 +1329,14 @@ def _request_parts(config: dict, payload: dict):
 
 async def _request_runninghub(config: dict, payload: dict) -> str:
     api_key = str(config.get("api_key") or "")
+    provider = str(config.get("provider") or "runninghub").lower()
+    overseas = provider == "runninghub_overseas"
+    app_nodes = RUNNINGHUB_APP_NODES["runninghub_overseas" if overseas else "runninghub"]
+    rh_base = "https://www.runninghub.ai" if overseas else "https://www.runninghub.cn"
+    rh_api_base = f"{rh_base}/openapi/v2"
+    rh_app_id = RUNNINGHUB_OVERSEAS_APP_ID if overseas else RUNNINGHUB_APP_ID
+    rh_host = "https://www.runninghub.ai" if overseas else "https://www.runninghub.cn"
+    model_cache = _RUNNINGHUB_OVERSEAS_MODELS_CACHE if overseas else _RUNNINGHUB_MODELS_CACHE
     request_id = str(payload.get("request_id") or "")
     media = payload.get("media") if isinstance(payload.get("media"), list) else []
     task = str(payload.get("task") or "T2VA")
@@ -1258,11 +1348,9 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
         str(payload.get("prompt") or ""),
     )
     mapping_notes = []
-    node_values = {
-        "11": "None", "2": "None", "12": "None", "13": "None", "14": "None",
-        "15": "None", "16": "None", "17": "None", "18": "None",
-    }
-    image_nodes = ("2", "12", "13", "14", "15", "16", "17", "18")
+    video_node = str(app_nodes["video"])
+    image_nodes = tuple(str(node_id) for node_id in app_nodes["images"])
+    node_values = {video_node: "None", **{node_id: "None" for node_id in image_nodes}}
     timeout = aiohttp.ClientTimeout(total=200)
     temp_dir = Path(tempfile.mkdtemp(prefix="gh_h3_rh_"))
     task_id = ""
@@ -1278,7 +1366,7 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
                     if image_index < len(image_nodes) and images:
                         node_id = image_nodes[image_index]
                         node_values[node_id] = await _runninghub_upload(
-                            session, api_key, data_url=images[0], filename=f"reference_{image_index + 1}.jpg"
+                            session, api_key, data_url=images[0], filename=f"reference_{image_index + 1}.jpg", api_base=rh_api_base
                         )
                         mapping_notes.append(f"{label} corresponds to uploaded image {image_index + 1}.")
                         image_index += 1
@@ -1288,7 +1376,7 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
                     if not video_uploaded and item.get("source_name"):
                         processed = temp_dir / "reference_1fps.mp4"
                         await _runninghub_video(str(item["source_name"]), duration, processed)
-                        node_values["11"] = await _runninghub_upload(session, api_key, path=processed)
+                        node_values[video_node] = await _runninghub_upload(session, api_key, path=processed, api_base=rh_api_base)
                         mapping_notes.append(f"{label} corresponds to the uploaded 1 FPS reference video.")
                         video_uploaded = True
                     else:
@@ -1300,17 +1388,18 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
             if mapping_notes:
                 user_prompt += "\n\nReference mapping:\n" + "\n".join(mapping_notes)
             node_info = [
-                {"nodeId": "11", "fieldName": "file", "fieldValue": node_values["11"]},
+                {"nodeId": video_node, "fieldName": "file", "fieldValue": node_values[video_node]},
                 *[
                     {"nodeId": node_id, "fieldName": "image", "fieldValue": node_values[node_id]}
                     for node_id in image_nodes
                 ],
-                {"nodeId": "1", "fieldName": "model", "fieldValue": str(config.get("model") or RUNNINGHUB_MODELS[0])},
-                {"nodeId": "9", "fieldName": "Text", "fieldValue": system_prompt},
-                {"nodeId": "10", "fieldName": "Text", "fieldValue": user_prompt},
+                {"nodeId": str(app_nodes["model"]), "fieldName": "model", "fieldValue": str(config.get("model") or model_cache[0])},
+                {"nodeId": str(app_nodes["system_prompt"]), "fieldName": "Text", "fieldValue": system_prompt},
+                {"nodeId": str(app_nodes["user_prompt"]), "fieldName": "Text", "fieldValue": user_prompt},
+                {"nodeId": str(app_nodes["max_tokens"]), "fieldName": "value", "fieldValue": str(int(config.get("max_tokens") or 4096))},
             ]
             async with session.post(
-                f"https://www.runninghub.cn/openapi/v2/run/ai-app/{RUNNINGHUB_APP_ID}",
+                f"{rh_api_base}/run/ai-app/{rh_app_id}",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={"nodeInfoList": node_info, "instanceType": "default", "usePersonalQueue": False},
             ) as response:
@@ -1323,18 +1412,27 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
             start_data = started.get("data") if isinstance(started.get("data"), dict) else started
             task_id = str(start_data.get("taskId") or "")
             if not task_id:
-                raise RuntimeError("RunningHub 应用启动响应缺少 taskId")
+                edition = "海外版" if overseas else "国内版"
+                error_code = str(start_data.get("errorCode") or started.get("errorCode") or "").strip()
+                error_message = str(start_data.get("errorMessage") or started.get("errorMessage") or "").strip()
+                if error_code or error_message:
+                    details = ": ".join(part for part in (error_code, error_message) if part)
+                    raise RuntimeError(f"RunningHub {edition}应用启动失败：{details}")
+                raise RuntimeError(
+                    f"RunningHub {edition}应用启动响应缺少 taskId；请确认使用的是{edition}专用 API Key。"
+                    f"服务端响应: {body[:800]}"
+                )
             if request_id:
-                _ACTIVE_RH_TASKS[request_id] = (api_key, task_id)
+                _ACTIVE_RH_TASKS[request_id] = (api_key, task_id, rh_host)
 
             while True:
                 cancel_event = payload.get("_cancel_event")
                 if cancel_event is not None and cancel_event.is_set():
-                    await _runninghub_cancel(api_key, task_id)
+                    await _runninghub_cancel(api_key, task_id, rh_host)
                     raise asyncio.CancelledError
                 await asyncio.sleep(2)
                 async with session.post(
-                    "https://www.runninghub.cn/openapi/v2/query",
+                    f"{rh_api_base}/query",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={"taskId": task_id},
                 ) as response:
@@ -1356,11 +1454,11 @@ async def _request_runninghub(config: dict, payload: dict) -> str:
         if active:
             await _runninghub_cancel(*active)
         elif task_id:
-            await _runninghub_cancel(api_key, task_id)
+            await _runninghub_cancel(api_key, task_id, rh_host)
         raise
     except asyncio.TimeoutError as error:
         if task_id:
-            await _runninghub_cancel(api_key, task_id)
+            await _runninghub_cancel(api_key, task_id, rh_host)
         raise RuntimeError("RunningHub 提示词优化超过200秒，云端任务已取消") from error
     finally:
         if request_id:
@@ -1431,9 +1529,23 @@ async def list_prompt_optimizer_models(_request):
 
 async def refresh_runninghub_models(_request):
     try:
-        models = await _refresh_runninghub_models()
-        return web.json_response({"runninghub_models": list(models)})
+        provider = str(_request.query.get("provider") or "runninghub").lower()
+        if provider not in {"runninghub", "runninghub_overseas"}:
+            provider = "runninghub"
+        models = await _refresh_runninghub_models(provider)
+        return web.json_response({
+            "provider": provider,
+            "runninghub_models": list(models) if provider == "runninghub" else list(_RUNNINGHUB_MODELS_CACHE),
+            "runninghub_overseas_models": list(models) if provider == "runninghub_overseas" else list(_RUNNINGHUB_OVERSEAS_MODELS_CACHE),
+        })
     except Exception as error:
+        if str(_request.query.get("provider") or "").lower() == "runninghub_overseas":
+            return web.json_response({
+                "provider": "runninghub_overseas",
+                "runninghub_models": list(_RUNNINGHUB_MODELS_CACHE),
+                "runninghub_overseas_models": list(_RUNNINGHUB_OVERSEAS_MODELS_CACHE),
+                "warning": f"RunningHub 海外版模型页暂时无法公开读取，继续使用内置列表: {error}",
+            })
         return web.json_response({"error": str(error)}, status=502)
 
 
