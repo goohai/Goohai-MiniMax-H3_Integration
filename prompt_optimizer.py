@@ -110,7 +110,26 @@ _GGUF_CONFIG: tuple[str, str, str] | None = None
 def _llm_root() -> Path:
     # This package lives in ComfyUI/custom_nodes/<package>; keep the model
     # location deterministic for both desktop and hosted ComfyUI installs.
-    return Path(__file__).resolve().parents[2] / "models" / "llm"
+    # Linux paths are case-sensitive, while Windows paths are not. Hosted
+    # users commonly create ``models/LLM`` instead of the documented
+    # ``models/llm``; resolve the directory case-insensitively so both work.
+    models_root = Path(__file__).resolve().parents[2] / "models"
+    preferred = models_root / "llm"
+    if preferred.is_dir():
+        return preferred
+    if models_root.is_dir():
+        try:
+            matching = sorted(
+                (item for item in models_root.iterdir() if item.is_dir() and item.name.casefold() == "llm"),
+                key=lambda item: item.name,
+            )
+        except OSError:
+            matching = []
+        if matching:
+            return matching[0]
+    # Keep the canonical path when the directory has not been created yet;
+    # callers can still report an empty model list without raising.
+    return preferred
 
 
 def _is_visual_model(path: Path) -> bool:
