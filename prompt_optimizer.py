@@ -107,7 +107,7 @@ _GGUF_HANDLER = None
 _GGUF_CONFIG: tuple[str, str, str] | None = None
 
 
-def _llm_root() -> Path:
+def _llm_roots() -> list[Path]:
     # This package lives in ComfyUI/custom_nodes/<package>; keep the model
     # location deterministic for both desktop and hosted ComfyUI installs.
     # Linux paths are case-sensitive, while Windows paths are not. Hosted
@@ -115,21 +115,24 @@ def _llm_root() -> Path:
     # ``models/llm``; resolve the directory case-insensitively so both work.
     models_root = Path(__file__).resolve().parents[2] / "models"
     preferred = models_root / "llm"
-    if preferred.is_dir():
-        return preferred
+    matching: list[Path] = []
     if models_root.is_dir():
         try:
             matching = sorted(
                 (item for item in models_root.iterdir() if item.is_dir() and item.name.casefold() == "llm"),
-                key=lambda item: item.name,
+                key=lambda item: (item.name != "llm", item.name),
             )
         except OSError:
             matching = []
-        if matching:
-            return matching[0]
-    # Keep the canonical path when the directory has not been created yet;
-    # callers can still report an empty model list without raising.
-    return preferred
+    # Keep the canonical path when no matching directory has been created yet;
+    # callers can still report an empty model list without raising.  When both
+    # ``llm`` and ``LLM`` exist (common on hosted Linux instances), scan both.
+    return matching or [preferred]
+
+
+def _llm_root() -> Path:
+    """Return the primary model root for backwards-compatible callers."""
+    return _llm_roots()[0]
 
 
 def _is_visual_model(path: Path) -> bool:
@@ -182,9 +185,12 @@ def _gguf_model_signature(name: str) -> tuple[str, str] | None:
 
 
 def _matching_mmproj(model_path: Path) -> list[Path]:
-    root = _llm_root()
     identity = _gguf_identity(model_path.name)
-    projectors = [path for path in root.rglob("*.gguf") if _is_mmproj(path)] if root.is_dir() else []
+    projectors = [
+        path
+        for root in _llm_roots() if root.is_dir()
+        for path in root.rglob("*.gguf") if _is_mmproj(path)
+    ]
     exact = [path for path in projectors if _gguf_identity(path.name, projector=True) == identity]
     if exact:
         return sorted(exact, key=lambda path: path.name.lower())
@@ -221,41 +227,67 @@ def _gguf_handler_name(path: Path) -> str | None:
     return None
 
 
-def _scan_visual_models() -> list[dict]:
-    root = _llm_root()
-    if not root.is_dir():
-        return []
-    result = []
-    for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
-        if _is_visual_model(path):
-            result.append({"name": path.name, "path": str(path), "relative_path": path.name, "format": "transformers"})
-    for path in sorted(root.rglob("*.gguf"), key=lambda item: str(item).lower()):
-        if _is_mmproj(path) or _gguf_handler_name(path) is None:
-            continue
+def _model_records(paths: list[tuple[Path, Path]]) -> list[tuple[Path, Path, str]]:
+    """Assign stable relative IDs, qualifying only cross-root name collisions."""
+    counts: dict[str, int] = {}
+    for root, path in paths:
         relative = path.relative_to(root).as_posix()
-        candidates = _matching_mmproj(path)
+        counts[relative.casefold()] = counts.get(relative.casefold(), 0) + 1
+    return [
+        (
+            root,
+            path,
+            f"{root.name}/{relative}" if counts[relative.casefold()] > 1 else relative,
+        )
+        for root, path in paths
+        for relative in (path.relative_to(root).as_posix(),)
+    ]
+
+
+def _scan_visual_models() -> list[dict]:
+    result = []
+    roots = _llm_roots()
+    transformer_paths = []
+    gguf_paths = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            if _is_visual_model(path):
+                transformer_paths.append((root, path))
+        for path in sorted(root.rglob("*.gguf"), key=lambda item: str(item).lower()):
+            if not _is_mmproj(path) and _gguf_handler_name(path) is not None:
+                gguf_paths.append((root, path))
+    for _root, path, relative in _model_records(transformer_paths):
+        result.append({"name": path.name, "path": str(path), "relative_path": relative, "format": "transformers"})
+    mmproj_by_path = {str(Path(item["path"]).absolute()): item["relative_path"] for item in _scan_mmproj_models()}
+    for _root, path, relative in _model_records(gguf_paths):
+        candidate_names = [
+            mmproj_by_path[str(candidate.absolute())]
+            for candidate in _matching_mmproj(path)
+            if str(candidate.absolute()) in mmproj_by_path
+        ]
         result.append({
             "name": path.name,
             "path": str(path),
             "relative_path": relative,
             "format": "gguf",
-            "mmproj_candidates": [candidate.relative_to(root).as_posix() for candidate in candidates],
+            "mmproj_candidates": candidate_names,
         })
     return result
 
 
 def _scan_mmproj_models() -> list[dict]:
-    root = _llm_root()
-    if not root.is_dir():
-        return []
+    paths = []
+    for root in _llm_roots():
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.gguf"), key=lambda item: str(item).lower()):
+            if _is_mmproj(path):
+                paths.append((root, path))
     return [
-        {
-            "name": path.name,
-            "path": str(path),
-            "relative_path": path.relative_to(root).as_posix(),
-        }
-        for path in sorted(root.rglob("*.gguf"), key=lambda item: str(item).lower())
-        if _is_mmproj(path)
+        {"name": path.name, "path": str(path), "relative_path": relative}
+        for _root, path, relative in _model_records(paths)
     ]
 
 
@@ -497,18 +529,23 @@ def _selected_mmproj(config: dict, model: dict) -> Path:
     candidates = list(model.get("mmproj_candidates") or [])
     selected = str(config.get("local_mmproj") or "").strip()
     if selected:
-        available = {item["relative_path"] for item in _scan_mmproj_models()}
-        if selected not in available:
+        available = {item["relative_path"]: item for item in _scan_mmproj_models()}
+        item = available.get(selected)
+        if item is None:
             raise ValueError("已选择的mmproj视觉模型不存在，请重新选择")
-        path = (_llm_root() / selected).resolve()
-        if not path.is_file() or _llm_root().resolve() not in path.parents:
+        path = Path(item["path"])
+        if not path.is_file():
             raise ValueError("已选择的mmproj文件不存在")
         return path
     if not candidates:
         raise ValueError("未找到与当前GGUF模型匹配的mmproj视觉模型")
     if len(candidates) > 1:
         raise ValueError("检测到多个匹配的mmproj视觉模型，请在配置页面选择一个版本")
-    return (_llm_root() / candidates[0]).resolve()
+    available = {item["relative_path"]: item for item in _scan_mmproj_models()}
+    item = available.get(candidates[0])
+    if item is None or not Path(item["path"]).is_file():
+        raise ValueError("自动匹配的mmproj视觉模型不存在，请重新选择")
+    return Path(item["path"])
 
 
 def _cuda_tag() -> str | None:
