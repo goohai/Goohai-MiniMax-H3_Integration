@@ -95,6 +95,8 @@ The diffusion model remains an external input in the downstream sampler. This pa
 - 最多 3 个独立参考音频；
 - 参考视频自带音轨（可在视频卡片右上角静音）。
 
+独立音频支持 MP3、WAV、FLAC、M4A/AAC、OGG/Opus、WMA、AIFF 等常见格式。节点会先使用 ComfyUI 默认解码器；遇到兼容性较差的编码或容器时，自动通过 FFmpeg 转为 PCM 音频后继续处理。
+
 全能参考模式会按视频音轨和独立音频的顺序生成音频序号，可在高级选项中选择驱动音频。参考媒体标签使用官方尖括号格式，例如 `<Picture 1>`、`<Video 1>`、`<Audio 2>`。
 
 ## 提示词标签

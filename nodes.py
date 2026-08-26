@@ -4,6 +4,12 @@ import math
 import os
 import json
 import logging
+import gc
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
 
 import folder_paths
 import nodes
@@ -41,6 +47,35 @@ ASPECTS = {
 DEFAULT_CLIP = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 DEFAULT_VIDEO_VAE = "minimax_h3_video_vae_fp16.safetensors"
 DEFAULT_AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
+
+
+def _schedule_background_model_cleanup() -> None:
+    """Unload ComfyUI models after AV decode has returned its outputs.
+
+    This is intentionally detached from node execution: decoded tensors are
+    already materialized, while downstream nodes remain free to continue. A
+    tiny grace period lets ComfyUI publish the node outputs before the global
+    model cache is released.
+    """
+    def cleanup() -> None:
+        try:
+            time.sleep(0.05)
+            unload_all = getattr(model_management, "unload_all_models", None)
+            if callable(unload_all):
+                unload_all()
+            empty_cache = getattr(model_management, "soft_empty_cache", None)
+            if callable(empty_cache):
+                empty_cache(force=True)
+            gc.collect()
+            logging.info("MiniMax H3 AV decode background model cleanup completed")
+        except Exception:
+            logging.exception("MiniMax H3 AV decode background model cleanup failed")
+
+    threading.Thread(
+        target=cleanup,
+        name="minimax-h3-av-decode-cleanup",
+        daemon=True,
+    ).start()
 
 
 def _files(content_type: str):
@@ -314,7 +349,56 @@ def _load_image_file(value):
 def _load_audio_file(value):
     if not value or value == "(none)":
         return None
-    return nodes_audio.LoadAudio.load(value)[0]
+    try:
+        return nodes_audio.LoadAudio.load(value)[0]
+    except Exception as primary_error:
+        # ComfyUI's PyAV loader can reject otherwise usable files (notably
+        # some FLAC encoders or files containing a damaged metadata/frame
+        # block).  Decode through FFmpeg to a plain PCM WAV as a compatibility
+        # fallback.  This also broadens support to common formats such as
+        # M4A/AAC, OGG/Opus, WMA and AIFF without changing H3's AUDIO contract.
+        source_path = folder_paths.get_annotated_filepath(value)
+        try:
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                import imageio_ffmpeg
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+
+            with tempfile.TemporaryDirectory(prefix="minimax_h3_audio_") as temp_dir:
+                wav_path = os.path.join(temp_dir, "decoded.wav")
+                process = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-hide_banner", "-loglevel", "error", "-y",
+                        "-fflags", "+discardcorrupt", "-err_detect", "ignore_err",
+                        "-i", source_path,
+                        "-vn", "-map", "0:a:0",
+                        "-c:a", "pcm_s16le", wav_path,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if process.returncode != 0 or not os.path.isfile(wav_path):
+                    details = (process.stderr or "").strip()[-1200:]
+                    raise RuntimeError(details or f"FFmpeg exited with code {process.returncode}")
+                waveform, sample_rate = nodes_audio.load(wav_path)
+                logging.info(
+                    "MiniMax H3 decoded audio through FFmpeg compatibility fallback: %s",
+                    os.path.basename(source_path),
+                )
+                return {"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate}
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"无法解码音频 {os.path.basename(str(source_path))}。"
+                "节点支持常见音频格式，但该文件可能已损坏、扩展名与实际编码不符，"
+                "或当前环境缺少可用的 FFmpeg。"
+                f"\nComfyUI/PyAV: {primary_error}"
+                f"\nFFmpeg fallback: {fallback_error}"
+            ) from fallback_error
 
 
 def _trim_audio_to_duration(audio, duration_seconds):
@@ -518,8 +602,15 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
         # The dedicated Hybrid upload is the GH equivalent of T8's first
         # autogrow ref_audio input. Keep it as a reference and also provide it
         # as the internal drive track so Hybrid works without an <Audio N> tag.
-        refs = [_load_image_file(v) for v in [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6, ref_image_7, ref_image_8, ref_image_9]]
-        refs = {f"ref_image_{i}": v for i, v in enumerate(refs, 1) if v is not None}
+        refs = {
+            f"ref_image_{i}": loaded
+            for i, value in enumerate(
+                [ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5,
+                 ref_image_6, ref_image_7, ref_image_8, ref_image_9],
+                1,
+            )
+            if (loaded := _load_image_file(value)) is not None
+        }
         ref_videos, video_audio = {}, {}
         muted_video_slots = _serialized_muted_video_slots(gh_state_json)
         for i, value in enumerate([ref_video_1, ref_video_2, ref_video_3], 1):
@@ -545,12 +636,19 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
             )
             for index, value in enumerate([ref_audio_1, ref_audio_2, ref_audio_3], 1)
         ]
-        audios = {f"ref_audio_{i}": v for i, v in enumerate(audios, 1) if v is not None}
+        audios = {f"ref_audio_{i}": value for i, value in enumerate(audios, 1) if value is not None}
         ordered_drive_audios = [
             video_audio[f"ref_video_audio_{i}"]
             for i in range(1, 4)
             if f"ref_video_audio_{i}" in video_audio
         ] + list(audios.values())
+        if (
+            main_mode == "all_reference"
+            and audio_mode == "lock_source"
+            and drive_audio_ordinal == 0
+            and ordered_drive_audios
+        ):
+            drive_audio_ordinal = 1
         selected_drive_audio = (
             ordered_drive_audios[drive_audio_ordinal - 1]
             if main_mode == "all_reference" and 0 < drive_audio_ordinal <= len(ordered_drive_audios)
@@ -757,7 +855,9 @@ class MiniMaxH3AVDecodeT8GH(io.ComfyNode):
 
     @classmethod
     def execute(cls, av_latent, video_vae, audio_vae):
-        return io.NodeOutput(*decode_av_latent(av_latent, video_vae, audio_vae))
+        outputs = decode_av_latent(av_latent, video_vae, audio_vae)
+        _schedule_background_model_cleanup()
+        return io.NodeOutput(*outputs)
 
 
 class MiniMaxH3IntegrationExtension(ComfyExtension):

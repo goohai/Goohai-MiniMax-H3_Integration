@@ -24,7 +24,7 @@ from .core import (
     sorted_autogrow_items,
     sorted_autogrow_values,
 )
-from .prompt_tags import media_map_json, prepare_prompt
+from .prompt_tags import media_map_json, pack_media_tag_ordinals, prepare_prompt
 
 
 HYBRID_KEYFRAME_SENTINEL = "t8_keyframe_latent"
@@ -283,7 +283,8 @@ def build_conditioning(
     if not 0.0 <= audio_denoise_strength <= 1.0:
         raise ValueError("audio_denoise_strength must be between 0 and 1")
 
-    ref_image_values = sorted_autogrow_values(ref_images)
+    ref_image_entries = sorted_autogrow_items(ref_images)
+    ref_image_values = [value for _, value in ref_image_entries]
     ref_video_entries = sorted_autogrow_items(ref_videos)
     ref_video_values = [value for _, value in ref_video_entries]
     ref_audio_values = sorted_autogrow_values(ref_audios)
@@ -329,7 +330,7 @@ def build_conditioning(
     video_labels: list[str] = []
     audio_labels: list[str] = []
 
-    for index, image in enumerate(ref_image_values, 1):
+    for image_ordinal, image in ref_image_entries:
         resized, ref_width, ref_height = _resize_reference_image(image, width, height, ref_image_size)
         encoded = video_vae.encode(resized)
         real_ref_items.append({"type": "image", "data": resized})
@@ -341,7 +342,7 @@ def build_conditioning(
                 "latent": encoded,
             }
         )
-        picture_labels.append(f"ref_image_{index}")
+        picture_labels.append(f"ref_image_{image_ordinal}")
 
     for index, (video_ordinal, frames) in enumerate(ref_video_entries, 1):
         if frames.ndim != 4 or frames.shape[0] < 5:
@@ -411,11 +412,43 @@ def build_conditioning(
     has_refs = bool(real_ref_blocks)
     resolved_task = resolve_task_type(task_type, first_frame, last_frame, has_refs)
     counts = {"pictures": len(picture_labels), "videos": len(video_labels), "audios": len(audio_labels)}
+    picture_ordinals = {
+        *range(1, len(keyframe_images) + 1),
+        *(ordinal + len(keyframe_images) for ordinal, _ in ref_image_entries),
+    }
+    video_ordinals_for_prompt = {ordinal for ordinal, _ in ref_video_entries}
+    audio_ordinals_for_prompt = set(range(1, len(audio_labels) + 1))
+    if not keyframe_images:
+        picture_ordinals = {ordinal for ordinal, _ in ref_image_entries}
+    if not ref_video_entries:
+        video_ordinals_for_prompt = set()
     conditioned_prompt, prompt_warnings = prepare_prompt(
         prompt,
         counts,
         strict=strict_prompt_tags,
         task_type=resolved_task,
+        valid_ordinals={
+            "picture": picture_ordinals,
+            "video": video_ordinals_for_prompt,
+            "audio": audio_ordinals_for_prompt,
+        },
+    )
+    packed_prompt = pack_media_tag_ordinals(
+        conditioned_prompt,
+        {
+            "picture": {
+                ordinal: packed
+                for packed, ordinal in enumerate(sorted(picture_ordinals), 1)
+            },
+            "video": {
+                ordinal: packed
+                for packed, ordinal in enumerate(sorted(video_ordinals_for_prompt), 1)
+            },
+            "audio": {
+                ordinal: packed
+                for packed, ordinal in enumerate(sorted(audio_ordinals_for_prompt), 1)
+            },
+        },
     )
     if keyframes and real_ref_blocks:
         hybrid_policy = assert_hybrid_layout_contract()
@@ -427,13 +460,13 @@ def build_conditioning(
             ] + real_ref_blocks
         else:
             refs = real_ref_blocks
-        tokens = clip.tokenize(conditioned_prompt, minimax_ref_items=ref_items)
+        tokens = clip.tokenize(packed_prompt, minimax_ref_items=ref_items)
     elif real_ref_blocks:
         refs = real_ref_blocks
-        tokens = clip.tokenize(conditioned_prompt, minimax_ref_items=real_ref_items)
+        tokens = clip.tokenize(packed_prompt, minimax_ref_items=real_ref_items)
     else:
         refs = []
-        tokens = clip.tokenize(conditioned_prompt, images=keyframe_images)
+        tokens = clip.tokenize(packed_prompt, images=keyframe_images)
 
     conditioning = clip.encode_from_tokens_scheduled(tokens)
     values = {}
@@ -449,7 +482,15 @@ def build_conditioning(
     elif mode == "remix_source":
         latent = replace_audio_latent(latent, encoded_source, audio_denoise_strength)
 
-    media_map = media_map_json(picture_labels, video_labels, audio_labels)
+    picture_map = {
+        **{index: label for index, label in enumerate(picture_labels[:len(keyframe_images)], 1)},
+        **{
+            ordinal + len(keyframe_images): f"ref_image_{ordinal}"
+            for ordinal, _ in ref_image_entries
+        },
+    }
+    video_map = {ordinal: f"ref_video_{ordinal}" for ordinal, _ in ref_video_entries}
+    media_map = media_map_json(picture_map, video_map, audio_labels)
     report_lines = [
         f"task={resolved_task}",
         f"audio_mode={mode}",

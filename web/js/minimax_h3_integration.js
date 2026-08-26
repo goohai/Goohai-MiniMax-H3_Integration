@@ -196,7 +196,7 @@ const DOM_TRANSLATIONS = {
     "Optional": "可选",
     "Add media": "添加素材",
     "Reference media": "参考素材",
-    "Supports up to 3 videos, 9 images, and 3 audios · Video MP4/MOV (2-30 seconds) · Audio MP3/WAV (2-30 seconds)": "支持视频x3，图片x9，音频x3 · 视频MP4/MOV(2-30秒) · 音频MP3/WAV(2-30秒)",
+    "Images x9 · Videos x3 (mp4/mov) · Audios x3 (mp3/wav/flac...)": "支持图像x9 · 视频x3(mp4/mov) · 音频x3 (mp3/wav/flac...)",
     "Up to 9 images": "最多9张图像",
     "Up to 3 videos": "最多3个视频",
     "Up to 3 audios": "最多3个音频",
@@ -416,7 +416,7 @@ function make(tag, css = {}, text = "") {
 function kindOf(file) {
     if (file.type?.startsWith("image/") || /\.(png|jpe?g|webp|bmp|gif)$/i.test(file.name)) return "image";
     if (file.type?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(file.name)) return "video";
-    if (file.type?.startsWith("audio/") || /\.(mp3|wav|flac|m4a|ogg|aac)$/i.test(file.name)) return "audio";
+    if (file.type?.startsWith("audio/") || /\.(mp3|wav|flac|m4a|aac|ogg|oga|opus|wma|aif|aiff|alac|amr|caf|ac3|mp2)$/i.test(file.name)) return "audio";
     return null;
 }
 function fileUrl(name) {
@@ -507,6 +507,7 @@ function createPanel(node) {
         return JSON.stringify({
             mode: state.mode,
             media: [...media.entries()],
+            vacantMediaSlots: [...vacantMediaSlots.entries()],
             prompt: prompt.value,
             prompts: { ...promptByMode },
             height: userHeight,
@@ -1069,17 +1070,43 @@ function nodeColorToCss(value) {
         return ordinal;
     };
     const allReferenceAudioCount = () => driveAudioEntries().length;
+    const selectFirstDriveAudioForOriginalMode = () => {
+        if (state.mode !== "all_reference") return 0;
+        if ((widget(node, "audio_mode")?.value || "native") !== "lock_source") return 0;
+        const current = Number(widget(node, "drive_audio_ordinal")?.value || 0);
+        if (current > 0) return current;
+        const first = driveAudioEntries()[0];
+        if (!first) return 0;
+        setWidget(node, "drive_audio_ordinal", first.ordinal);
+        driveAudioOrdinalControl.value = String(first.ordinal);
+        return first.ordinal;
+    };
     const hasModeAudio = () => state.mode === "text_keyframes"
         ? media.has("hybrid_audio")
         : allReferenceAudioCount() > 0 && Number(widget(node, "drive_audio_ordinal")?.value || 0) > 0;
     const syncAudioModeDefault = () => {
         const mode = state.mode;
         if (audioModeAutoByMode[mode] !== false) {
-            audioModeByMode[mode] = hasModeAudio() ? "lock_source" : "native";
+            if (mode === "all_reference") {
+                const count = allReferenceAudioCount();
+                audioModeByMode[mode] = count === 0
+                    ? "native"
+                    : count === 1 ? "lock_source" : "reference_only";
+                const driveOrdinal = count === 0 ? 0 : 1;
+                setWidget(node, "drive_audio_ordinal", driveOrdinal);
+                driveAudioOrdinalControl.value = String(driveOrdinal);
+            } else {
+                audioModeByMode[mode] = hasModeAudio() ? "lock_source" : "native";
+            }
         }
         setWidget(node, "audio_mode", audioModeByMode[mode] || "native");
         const control = advancedRows.get("audio_mode")?.querySelector("select");
         if (control) control.value = widget(node, "audio_mode")?.value;
+        // Original-audio output requires a drive track. If the mode was
+        // entered manually or automatically while "None" was selected, use
+        // Audio 1 as the initial choice without locking the selector; users
+        // can still choose any other available drive audio afterwards.
+        selectFirstDriveAudioForOriginalMode();
         if (!audioStrengthManual) {
             const modeValue = widget(node, "audio_mode")?.value || "native";
             const strength = modeValue === "lock_source" ? 0 : 1;
@@ -1088,8 +1115,16 @@ function nodeColorToCss(value) {
             if (input) input.value = strength;
         }
     };
-    const syncAudioModeAfterMediaChange = (slot) => {
-        if (state.mode !== "text_keyframes" || slot !== "hybrid_audio") return;
+    const syncAudioModeAfterMediaChange = (slot, previousAudioCount = null) => {
+        const affectsAudio = state.mode === "text_keyframes"
+            ? slot === "hybrid_audio"
+            : slot?.startsWith("ref_audio_") || slot?.startsWith("ref_video_");
+        if (!affectsAudio) return;
+        if (
+            state.mode === "all_reference"
+            && previousAudioCount != null
+            && previousAudioCount === allReferenceAudioCount()
+        ) return;
         // Reference-audio add/remove starts a fresh automatic decision; the
         // user can still override it manually afterwards.
         audioModeAutoByMode[state.mode] = true;
@@ -1403,6 +1438,22 @@ function nodeColorToCss(value) {
         };
     }
     const state = { mode: savedMode }; const media = new Map(savedState.media || []);
+    // A removed upload leaves its prompt ordinal reserved. This keeps, for
+    // example, <Picture 1> empty instead of making Picture 2 take its preview.
+    // Vacancies are UI-only and are never written to the actual media widgets.
+    const vacantMediaSlots = new Map(savedState.vacantMediaSlots || []);
+    for (const slot of media.keys()) vacantMediaSlots.delete(slot);
+    const vacantMediaEntries = new Map();
+    const mediaEntryForOrder = slot => {
+        const entry = media.get(slot);
+        if (entry) return entry;
+        const vacancy = vacantMediaSlots.get(slot);
+        if (!vacancy) return null;
+        if (!vacantMediaEntries.has(slot)) {
+            vacantMediaEntries.set(slot, { ...vacancy, vacant: true, slot });
+        }
+        return vacantMediaEntries.get(slot);
+    };
     let adaptiveRatio = 16 / 9;
     function firstVisualEntry() {
         const slots = state.mode === "text_keyframes"
@@ -1507,6 +1558,9 @@ function nodeColorToCss(value) {
         }
         let value = prompt.value;
         for (const [kind, label] of [["image", "Picture"], ["video", "Video"], ["audio", "Audio"]]) {
+            // Deleted slots deliberately reserve their old prompt ordinal.
+            // Legacy single-item repair must not collapse those vacancies.
+            if ([...vacantMediaSlots.values()].some(entry => entry?.kind === kind)) continue;
             if (activeCounts[kind] !== 1) continue;
             const one = new RegExp(`<${label}\\s+1>`, "i");
             if (one.test(value)) continue;
@@ -1549,7 +1603,8 @@ function nodeColorToCss(value) {
         // Frame uploads are kept in state when switching modes, but they are
         // not reference media in Ref2VA. Exclude them from reference ordinals
         // so a single reference picture is always <picture 1>.
-        const list = [...media.entries()].filter(([s, e]) => {
+        const list = mediaSlots.map(s => [s, mediaEntryForOrder(s)]).filter(([s, e]) => {
+            if (!e) return false;
             if (e.kind !== kind) return false;
             if (state.mode === "all_reference" && (s === "first_frame" || s === "last_frame")) return false;
             if (state.mode === "all_reference" && s === "hybrid_audio") return false;
@@ -1558,36 +1613,45 @@ function nodeColorToCss(value) {
         return `${prefix} ${list.findIndex(([s]) => s === slot) + 1}`;
     }
     function audioOrdinalFor(slot) {
-        const videos = [...media.entries()].filter(([s, e]) => e?.kind === "video" && !e.muted).sort((a, b) => a[0].localeCompare(b[0]));
+        const orderedEntries = mediaSlots.map(s => [s, mediaEntryForOrder(s)]);
+        const videos = orderedEntries.filter(([s, e]) => e?.kind === "video" && !e.muted).sort((a, b) => a[0].localeCompare(b[0]));
         const videoIndex = videos.findIndex(([s]) => s === slot);
         if (videoIndex >= 0) return videoIndex + 1;
-        const audios = [...media.entries()].filter(([s, e]) => e?.kind === "audio" && s !== "hybrid_audio").sort((a, b) => a[0].localeCompare(b[0]));
+        const audios = orderedEntries.filter(([s, e]) => e?.kind === "audio" && s !== "hybrid_audio").sort((a, b) => a[0].localeCompare(b[0]));
         const audioIndex = audios.findIndex(([s]) => s === slot);
         return audioIndex >= 0 ? videos.length + audioIndex + 1 : 0;
     }
     resolvePromptMedia = (kind, ordinal) => {
         if (!Number.isFinite(ordinal) || ordinal < 1) return null;
         if (kind === "picture" && state.mode === "text_keyframes") {
-            const keyframes = [media.get("first_frame"), media.get("last_frame")].filter(entry => entry?.kind === "image");
-            return keyframes[ordinal - 1] || null;
+            const keyframes = ["first_frame", "last_frame"]
+                .map(mediaEntryForOrder).filter(entry => entry?.kind === "image");
+            const selected = keyframes[ordinal - 1];
+            return selected?.vacant ? null : selected || null;
         }
         if (kind === "audio") {
-            if (state.mode === "text_keyframes") return ordinal === 1 ? media.get("hybrid_audio") || null : null;
-            const videoAudio = [...media.entries()]
+            if (state.mode === "text_keyframes") {
+                const selected = ordinal === 1 ? mediaEntryForOrder("hybrid_audio") : null;
+                return selected?.vacant ? null : selected || null;
+            }
+            const orderedEntries = mediaSlots.map(slot => [slot, mediaEntryForOrder(slot)]);
+            const videoAudio = orderedEntries
                 .filter(([slot, entry]) => slot.startsWith("ref_video_") && entry?.kind === "video" && !entry.muted)
                 .sort((a, b) => a[0].localeCompare(b[0]));
-            const audioFiles = [...media.entries()]
+            const audioFiles = orderedEntries
                 .filter(([slot, entry]) => slot.startsWith("ref_audio_") && entry?.kind === "audio")
                 .sort((a, b) => a[0].localeCompare(b[0]));
-            return [...videoAudio, ...audioFiles][ordinal - 1]?.[1] || null;
+            const selected = [...videoAudio, ...audioFiles][ordinal - 1]?.[1];
+            return selected?.vacant ? null : selected || null;
         }
         const targetKind = kind === "picture" ? "image" : kind;
-        const entries = [...media.entries()].filter(([slot, entry]) => {
+        const entries = mediaSlots.map(slot => [slot, mediaEntryForOrder(slot)]).filter(([slot, entry]) => {
             if (entry?.kind !== targetKind) return false;
             if (state.mode === "all_reference" && ["first_frame", "last_frame", "hybrid_audio"].includes(slot)) return false;
             return state.mode !== "text_keyframes" || ["first_frame", "last_frame", "hybrid_audio"].includes(slot);
         }).sort((a, b) => a[0].localeCompare(b[0]));
-        return entries[ordinal - 1]?.[1] || null;
+        const selected = entries[ordinal - 1]?.[1];
+        return selected?.vacant ? null : selected || null;
     };
     const refreshPromptMediaPreviews = (...changedEntries) => {
         // Media changes are discrete user actions, so refresh the rich prompt
@@ -1630,32 +1694,6 @@ function nodeColorToCss(value) {
         const a = document.activeElement === prompt ? prompt.selectionStart : prompt.value.length;
         const b = document.activeElement === prompt ? prompt.selectionEnd : a;
         prompt.setRangeText(`<Audio ${ordinal}>`, a, b, "end"); renderPromptHighlights(); promptByMode[state.mode] = prompt.value; setPromptWidget(node, prompt.value); persistState();
-    }
-    function ensureReferenceTags() {
-        if (state.mode !== "all_reference" || !prompt.value) return;
-        // If the prompt already references one media type, make sure newly
-        // uploaded media of the other types is not silently omitted from H3.
-        // Clicking a card still inserts at the caret; this only fills missing
-        // tags after an upload when the prompt is already using media tags.
-        if (!/<\s*(Picture|Image|Video|Audio)\s*\d+\s*>/i.test(prompt.value)) return;
-        let value = prompt.value;
-        for (const kind of ["image", "video", "audio"]) {
-            const entries = [...media.entries()]
-                .filter(([slot, entry]) => entry?.kind === kind && !["first_frame", "last_frame", "hybrid_audio"].includes(slot))
-                .sort((a, b) => a[0].localeCompare(b[0]));
-            entries.forEach(([slot], index) => {
-                const label = kind === "image" ? "Picture" : kind[0].toUpperCase() + kind.slice(1);
-                const tag = `<${label} ${index + 1}>`;
-                if (!new RegExp(`<\\s*${label}\\s+${index + 1}\\s*>`, "i").test(value)) value += ` ${tag}`;
-            });
-        }
-        if (value !== prompt.value) {
-            prompt.value = value;
-            renderPromptHighlights();
-            promptByMode[state.mode] = value;
-            setPromptWidget(node, value);
-            persistState();
-        }
     }
     const optimizerProviders = {
         runninghub: { label: "RunningHub 国内版（推荐）", url: "https://www.runninghub.cn/openapi/v2", model: "openai/gpt-5.6-sol", protocol: "runninghub" },
@@ -2608,19 +2646,23 @@ function nodeColorToCss(value) {
     function promptMediaIdentityOrder() {
         if (state.mode === "text_keyframes") {
             return {
-                picture: ["first_frame", "last_frame"].map(slot => media.get(slot)).filter(entry => entry?.kind === "image"),
+                picture: ["first_frame", "last_frame"].map(mediaEntryForOrder).filter(entry => entry?.kind === "image"),
                 video: [],
-                audio: media.get("hybrid_audio") ? [media.get("hybrid_audio")] : [],
+                audio: mediaEntryForOrder("hybrid_audio") ? [mediaEntryForOrder("hybrid_audio")] : [],
             };
         }
-        const ordered = kind => [...media.entries()]
+        const ordered = kind => mediaSlots.map(slot => [slot, mediaEntryForOrder(slot)])
             .filter(([slot, entry]) => !["first_frame", "last_frame", "hybrid_audio"].includes(slot) && entry?.kind === kind)
             .sort((a, b) => a[0].localeCompare(b[0]))
             .map(([, entry]) => entry);
+        const orderedAudio = [
+            ...videoSlots.map(slot => mediaEntryForOrder(slot)).filter(entry => entry?.kind === "video" && !entry.muted),
+            ...audioSlots.slice(1).map(slot => mediaEntryForOrder(slot)).filter(entry => entry?.kind === "audio"),
+        ];
         return {
             picture: ordered("image"),
             video: ordered("video"),
-            audio: driveAudioEntries().map(item => item.entry),
+            audio: orderedAudio,
         };
     }
     function applyPromptMediaMappings(mappings) {
@@ -2652,42 +2694,58 @@ function nodeColorToCss(value) {
         }
         applyPromptMediaMappings(mappings);
     }
+    function mediaEntryIsReferenced(beforeOrder, entry) {
+        if (!entry || !prompt.value) return false;
+        const type = entry.kind === "image" ? "picture" : entry.kind;
+        const ordinal = beforeOrder[type]?.indexOf(entry);
+        if (ordinal == null || ordinal < 0) return false;
+        return promptMediaMatches(prompt.value).some(match => match.type === type && match.ordinal === ordinal + 1);
+    }
     function remapPromptForMediaOrder(assignments, kind) {
         const entryAt = slot => assignments.has(slot) ? assignments.get(slot) : media.get(slot);
-        const orderedKindEntries = (targetKind, getter) => {
+        const orderedKindSlots = targetKind => {
             if (targetKind === "image" && state.mode === "text_keyframes") {
-                return ["first_frame", "last_frame"].map(getter).filter(entry => entry?.kind === "image");
+                return ["first_frame", "last_frame"];
+            }
+            if (state.mode === "all_reference") {
+                return targetKind === "image" ? imageSlots.slice(2)
+                    : targetKind === "video" ? videoSlots : [];
             }
             return [...media.keys()]
-                .filter(slot => !["first_frame", "last_frame", "hybrid_audio"].includes(slot) && getter(slot)?.kind === targetKind)
-                .sort((a, b) => a.localeCompare(b))
-                .map(getter);
+                .filter(slot => !["first_frame", "last_frame", "hybrid_audio"].includes(slot))
+                .filter(slot => mediaEntryForOrder(slot)?.kind === targetKind)
+                .sort((a, b) => a.localeCompare(b));
         };
-        const orderedAudioEntries = getter => {
-            const slots = [...media.keys()];
-            const videos = slots.filter(slot => getter(slot)?.kind === "video" && !getter(slot).muted).sort((a, b) => a.localeCompare(b));
-            const audios = slots.filter(slot => getter(slot)?.kind === "audio" && slot !== "hybrid_audio").sort((a, b) => a.localeCompare(b));
-            return [...videos, ...audios].map(getter);
+        const orderedAudioSlots = getter => {
+            const videos = (state.mode === "all_reference" ? videoSlots : [...media.keys()])
+                .filter(slot => getter(slot)?.kind === "video" && !getter(slot).muted)
+                .sort((a, b) => a.localeCompare(b));
+            const audios = (state.mode === "all_reference" ? audioSlots.slice(1) : [...media.keys()])
+                .filter(slot => getter(slot)?.kind === "audio" && slot !== "hybrid_audio")
+                .sort((a, b) => a.localeCompare(b));
+            return [...videos, ...audios];
         };
         const mappings = new Map();
-        const mapIdentityOrdinals = (type, before, after) => {
-            before.forEach((entry, index) => {
-                const nextIndex = after.indexOf(entry);
+        const mapIdentityOrdinals = (type, beforeSlots, afterSlots, beforeGetter, afterGetter) => {
+            beforeSlots.forEach((slot, index) => {
+                const entry = beforeGetter(slot);
+                if (!entry || entry.vacant) return;
+                const nextIndex = afterSlots.findIndex(candidate => afterGetter(candidate) === entry);
                 if (nextIndex >= 0 && nextIndex !== index) mappings.set(`${type}:${index + 1}`, nextIndex + 1);
             });
         };
         if (kind === "image" || kind === "video") {
+            const slots = orderedKindSlots(kind);
             mapIdentityOrdinals(
                 kind === "image" ? "picture" : "video",
-                orderedKindEntries(kind, slot => media.get(slot)),
-                orderedKindEntries(kind, entryAt),
+                slots, slots, mediaEntryForOrder, entryAt,
             );
         }
         if (kind === "video" || kind === "audio") {
+            const slots = orderedAudioSlots(mediaEntryForOrder);
             mapIdentityOrdinals(
                 "audio",
-                orderedAudioEntries(slot => media.get(slot)),
-                orderedAudioEntries(entryAt),
+                slots, slots, mediaEntryForOrder, entryAt,
             );
         }
         applyPromptMediaMappings(mappings);
@@ -2822,7 +2880,13 @@ function nodeColorToCss(value) {
             const sound = make("button", {}, entry.muted ? String.fromCodePoint(0x1F507) : String.fromCodePoint(0x1F50A));
             sound.className = "ghh3-sound";
             sound.title = t(entry.muted ? "Unmute video" : "Mute video");
-            sound.onclick = e => { e.stopPropagation(); entry.muted = !entry.muted; refreshPromptMediaPreviews(); persistState(); render(); };
+            sound.onclick = e => {
+                e.stopPropagation();
+                const previousAudioCount = allReferenceAudioCount();
+                entry.muted = !entry.muted;
+                syncAudioModeAfterMediaChange(slot, previousAudioCount);
+                refreshPromptMediaPreviews(); persistState(); render();
+            };
             item.appendChild(sound);
             const video = item.querySelector("video");
             const oldPlay = item.querySelector(".ghh3-play");
@@ -2841,17 +2905,32 @@ function nodeColorToCss(value) {
         item.appendChild(make("div", {}, `${labelFor(slot, entry.kind)}: ${entry.name}`)).className = "ghh3-card-name";
         const remove = make("button", {}, "×"); remove.className = "ghh3-remove"; remove.onclick = e => {
             e.stopPropagation();
-            const beforeOrder = promptMediaIdentityOrder();
             const driveSelection = captureDriveAudioSelection();
+            const previousAudioCount = allReferenceAudioCount();
+            const beforeOrder = promptMediaIdentityOrder();
             const removed = media.get(slot);
+            const hasPromptMediaTags = promptMediaMatches(prompt.value).length > 0;
+            const preserveOrdinal = hasPromptMediaTags && mediaEntryIsReferenced(beforeOrder, removed);
+            if (removed && preserveOrdinal) {
+                vacantMediaSlots.set(slot, { kind: removed.kind, muted: !!removed.muted });
+                vacantMediaEntries.delete(slot);
+            } else if (!hasPromptMediaTags) {
+                // With no media tags in the prompt, there is no user-visible
+                // ordinal to preserve. Restore the original compact numbering.
+                vacantMediaSlots.clear();
+                vacantMediaEntries.clear();
+            } else {
+                vacantMediaSlots.delete(slot);
+                vacantMediaEntries.delete(slot);
+            }
             media.delete(slot);
             setMediaWidget(node, slot, "");
-            remapPromptAfterMediaChange(beforeOrder, true);
+            if (!preserveOrdinal) remapPromptAfterMediaChange(beforeOrder, false);
             restoreDriveAudioSelection(driveSelection);
-            syncAudioModeAfterMediaChange(slot);
+            syncAudioModeAfterMediaChange(slot, previousAudioCount);
             refreshPromptMediaPreviews(removed);
             persistState();
-            render();
+            render(false, true);
         }; item.appendChild(remove);
         let clickTimer;
         installMediaLongPressReorder(item, slot);
@@ -2871,7 +2950,7 @@ function nodeColorToCss(value) {
         if (slot === "first_frame") { title = t("First frame"); subtitle = t("First and last frames empty means text-to-video"); }
         else if (slot === "last_frame") { title = t("Last frame"); subtitle = t("First and last frames empty means text-to-video"); }
         else if (slot === "hybrid_audio") { title = t("Reference audio"); subtitle = t("Optional"); icon = "♫"; }
-        else if (referenceEmpty) { title = t("Reference media"); subtitle = t("Supports up to 3 videos, 9 images, and 3 audios · Video MP4/MOV (2-30 seconds) · Audio MP3/WAV (2-30 seconds)"); }
+        else if (referenceEmpty) { title = t("Reference media"); subtitle = t("Images x9 · Videos x3 (mp4/mov) · Audios x3 (mp3/wav/flac...)"); }
         const d = make("div"); d.className = "ghh3-drop"; if (slot === "hybrid_audio") d.classList.add("ghh3-audio-drop"); if (referenceEmpty) d.classList.add("ghh3-reference-empty");
         d.dataset.ghh3DropSlot = slot || "";
         if (slot === "first_frame" || slot === "last_frame") {
@@ -2896,8 +2975,8 @@ function nodeColorToCss(value) {
         }
         d.onclick = () => choose(slot); d.onpointerenter = () => { hoverPasteSlot = slot; }; d.onpointerleave = () => { if (hoverPasteSlot === slot) hoverPasteSlot = undefined; }; d.ondragover = e => { e.preventDefault(); e.stopPropagation(); }; d.ondrop = e => { e.preventDefault(); e.stopPropagation(); accept(e.dataTransfer.files, slot); }; return d;
     }
-    function render(preserveAdvancedSettings = false) {
-        normalizePromptTagFormat();
+    function render(preserveAdvancedSettings = false, preservePromptTags = false) {
+        if (!preservePromptTags) normalizePromptTagFormat();
         updateAdvancedVisibility(preserveAdvancedSettings);
         root.querySelector(".ghh3-dynamic")?.remove(); const box = make("div"); box.className = "ghh3-box ghh3-dynamic";
         if (state.mode === "text_keyframes") {
@@ -2912,7 +2991,9 @@ function nodeColorToCss(value) {
             if (uploadNotice) grid.appendChild(make("div", {}, uploadNotice)).className = "ghh3-limit";
             box.appendChild(grid);
         }
-    root.insertBefore(box, promptWrap); repairLegacyReferenceTags(); ensureReferenceTags(); refreshTaskType(); refreshAdaptiveRatio(); syncLayout();
+    root.insertBefore(box, promptWrap);
+    if (!preservePromptTags) repairLegacyReferenceTags();
+    refreshTaskType(); refreshAdaptiveRatio(); syncLayout();
     }
     function limitText(kind) {
         return kind === "image" ? t("Up to 9 images") : kind === "video" ? t("Up to 3 videos") : t("Up to 3 audios");
@@ -2959,11 +3040,14 @@ function nodeColorToCss(value) {
             const existing = media.get(slot);
             if (existing && existing.kind !== kind) continue;
             try {
+                const previousAudioCount = allReferenceAudioCount();
                 const name = await uploadFile(file);
                 const entry = kind === "audio" ? { name, kind, trimStart: 0, trimEnd: null } : { name, kind };
                 if (existing) changedEntries.push(existing);
-                media.set(slot, entry); setMediaWidget(node, slot, name); syncAudioModeAfterMediaChange(slot);
-                ensureReferenceTags();
+                vacantMediaSlots.delete(slot);
+                vacantMediaEntries.delete(slot);
+                media.set(slot, entry); setMediaWidget(node, slot, name);
+                syncAudioModeAfterMediaChange(slot, previousAudioCount);
                 changedEntries.push(entry);
             } catch (e) { console.error("[MiniMax H3 Integration]", e); }
             preferredSlot = null;

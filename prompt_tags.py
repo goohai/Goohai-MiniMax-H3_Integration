@@ -29,6 +29,7 @@ def prepare_prompt(
     counts: dict[str, int],
     strict: bool = True,
     task_type: str | None = None,
+    valid_ordinals: dict[str, set[int]] | None = None,
 ) -> tuple[str, list[str]]:
     normalized = canonicalize_media_tags(prompt, task_type)
 
@@ -40,21 +41,40 @@ def prepare_prompt(
     }
     for match in OFFICIAL_TAG_RE.finditer(normalized):
         media_type, ordinal = match.group(1).lower(), int(match.group(2))
-        if ordinal < 1 or ordinal > limits[media_type]:
+        valid = valid_ordinals.get(media_type) if valid_ordinals else None
+        missing = ordinal not in valid if valid is not None else ordinal < 1 or ordinal > limits[media_type]
+        if missing:
             warnings.append(
-                f"{match.group(0)} is not connected; available {media_type} count is {limits[media_type]}"
+                f"{match.group(0)} is not connected; available {media_type} ordinals are "
+                f"{sorted(valid) if valid is not None else list(range(1, limits[media_type] + 1))}"
             )
     if strict and warnings:
         raise ValueError("当前提示词引用了不存在的素材标签，请引用正确的标签后重试")
     return normalized, warnings
 
 
-def media_map_json(pictures: list[str], videos: list[str], audios: list[str]) -> str:
+def pack_media_tag_ordinals(prompt: str, ordinal_maps: dict[str, dict[int, int]]) -> str:
+    """Map stable UI slot ordinals to the dense order used by MiniMax's tokenizer."""
+    def replacement(match: re.Match) -> str:
+        media_type = match.group(1).lower()
+        ordinal = int(match.group(2))
+        packed = ordinal_maps.get(media_type, {}).get(ordinal, ordinal)
+        return f"<{match.group(1).title()} {packed}>"
+
+    return OFFICIAL_TAG_RE.sub(replacement, prompt or "")
+
+
+def media_map_json(pictures, videos, audios) -> str:
+    def mapped(values):
+        if isinstance(values, dict):
+            return {str(index): label for index, label in sorted(values.items())}
+        return {str(index + 1): label for index, label in enumerate(values)}
+
     return json.dumps(
         {
-            "pictures": {str(index + 1): label for index, label in enumerate(pictures)},
-            "videos": {str(index + 1): label for index, label in enumerate(videos)},
-            "audios": {str(index + 1): label for index, label in enumerate(audios)},
+            "pictures": mapped(pictures),
+            "videos": mapped(videos),
+            "audios": mapped(audios),
         },
         ensure_ascii=False,
         indent=2,
