@@ -9,7 +9,7 @@ import comfy.model_management as mm
 from comfy.nested_tensor import NestedTensor
 from comfy_api.latest import io
 
-from Comfyui_Minimax_h3_latent_Upscaler.nodes.minimax_h3_latent_upscaler_3d import (
+from .latent_upscaler_core import (
     VAE_DOWNSAMPLE,
     UpscaleMode,
     _make_norm_tensors,
