@@ -157,6 +157,37 @@ def _h3_make_nested(video, audio):
         return NestedTensor([video, audio])
     return video
 
+def _h3_noise_masks(latent_dict):
+
+    masks = latent_dict.get("noise_mask")
+    if masks is None:
+        return None, None
+    if getattr(masks, "is_nested", False):
+        parts = tuple(masks.unbind())
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    if isinstance(masks, torch.Tensor):
+        return masks, None
+    raise ValueError("H3: unsupported AV noise_mask layout")
+
+def _h3_make_mask(video_mask, audio_mask):
+
+    if video_mask is None and audio_mask is None:
+        return None
+    if video_mask is None:
+        raise ValueError("H3: audio noise mask requires a video noise mask")
+    if audio_mask is not None:
+        return NestedTensor((video_mask, audio_mask))
+    return video_mask
+
+def _crop_spatial_tensor(tensor, tile_axis, start, end):
+
+    if tensor is None:
+        return None
+    if tile_axis == "H":
+        return tensor[:, :, :, start:end, :].contiguous()
+    return tensor[:, :, :, :, start:end].contiguous()
+
 def _adjust_frame_count(latent_5d, target_frames, mode, debug=False):
 
     B, C, T, H, W = latent_5d.shape
@@ -331,13 +362,20 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
         )
 
         B, C, F, H, W = video_tensor.shape
+        video_mask, audio_mask = _h3_noise_masks(latent)
+        if debug and audio_mask is not None and torch.any(audio_mask < 1.0).item():
+            print(
+                "  · [H3 原声同步] 检测到锁定音频 mask：二采将保持完整音频条件，"
+                "并按 mask 锁定音频 latent"
+            )
 
         if not enable_tiling:
             if debug:
                 print(f"  · bypass: 单次采样 (video shape={tuple(video_tensor.shape)})")
             return self._single_pass(
                 noise, guider, sampler, sigmas, latent,
-                video_tensor, audio_tensor, fmt_info, debug
+                video_tensor, audio_tensor, fmt_info,
+                video_mask, audio_mask, debug
             )
 
         if tile_axis == "auto":
@@ -352,7 +390,8 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                 print(f"  · auto-bypass ({reason})")
             return self._single_pass(
                 noise, guider, sampler, sigmas, latent,
-                video_tensor, audio_tensor, fmt_info, debug
+                video_tensor, audio_tensor, fmt_info,
+                video_mask, audio_mask, debug
             )
 
         overlap_pixels = max(0, int(tile_overlap))
@@ -417,7 +456,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                 latent, noise, guider, sampler, sigmas,
                 video_tensor, audio_tensor, fmt_info,
                 full_noise, starts, tile_size, tile_axis,
-                keyframe_contexts, debug,
+                keyframe_contexts, video_mask, audio_mask, debug,
             )
 
         if debug:
@@ -447,6 +486,10 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
             tile_nested = _h3_make_nested(tile_latent, audio_tensor)
 
             tile_noise = _h3_make_nested(tile_video_noise, full_audio_noise)
+            tile_mask = _h3_make_mask(
+                _crop_spatial_tensor(video_mask, tile_axis, ax_start, ax_end),
+                audio_mask,
+            )
 
             x0_output = {}
             callback = latent_preview.prepare_callback(
@@ -460,7 +503,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
             try:
                 tile_samples = guider.sample(
                     tile_noise, tile_nested, sampler, sigmas,
-                    denoise_mask=None,
+                    denoise_mask=tile_mask,
                     callback=callback,
                     disable_pbar=disable_pbar,
                     seed=noise.seed,
@@ -560,7 +603,8 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                 output = self._refine_seams(
                 output, full_video_noise, audio_tensor, full_audio_noise,
                 starts, tile_size, overlap_latent, tile_axis, noise, guider, sampler, sigmas,
-                refine_steps, device, dtype, keyframe_contexts, debug
+                refine_steps, device, dtype, keyframe_contexts,
+                video_mask, audio_mask, debug
             )
 
         intermediate_device = comfy.model_management.intermediate_device()
@@ -610,7 +654,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
         latent_dict, noise, guider, sampler, sigmas,
         video_tensor, audio_tensor, fmt_info,
         full_noise, starts, tile_size, tile_axis,
-        keyframe_contexts, debug=False,
+        keyframe_contexts, video_mask=None, audio_mask=None, debug=False,
     ):
 
         full_nested = _h3_make_nested(video_tensor, audio_tensor)
@@ -664,6 +708,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
         shift_video = float(getattr(sampler, "_goohai_shift_video", 12.0))
         shift_audio = float(getattr(sampler, "_goohai_shift_audio", 3.0))
         audio_velocity_is_raw = bool(getattr(sampler, "_goohai_audio_velocity_is_raw", False))
+        full_denoise_mask = _h3_make_mask(video_mask, audio_mask)
 
         @torch.no_grad()
         def synchronized_euler(
@@ -678,6 +723,19 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
             saved_model_shapes = getattr(prepared_model, "latent_shapes", None)
             saved_conds = {}
             payload_conds = []
+            packed_full_mask = extra_args.get("denoise_mask")
+            full_mask_streams = (
+                comfy.utils.unpack_latents(packed_full_mask, full_shapes)
+                if packed_full_mask is not None else None
+            )
+            full_latent_streams = (
+                comfy.utils.unpack_latents(model.latent_image, full_shapes)
+                if getattr(model, "latent_image", None) is not None else None
+            )
+            full_noise_streams = (
+                comfy.utils.unpack_latents(model.noise, full_shapes)
+                if getattr(model, "noise", None) is not None else None
+            )
 
             for cond_group in getattr(model.inner_model, "conds", {}).values():
                 if cond_group is None:
@@ -806,13 +864,55 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                         if audio_x is not None:
                             tile_streams.append(audio_x)
                         tile_x, tile_shapes = comfy.utils.pack_latents(tile_streams)
+                        tile_mask = None
+                        if full_mask_streams is not None:
+                            tile_mask_streams = [
+                                _crop_spatial_tensor(
+                                    full_mask_streams[0], tile_axis, ax_start, ax_end
+                                )
+                            ]
+                            if len(full_mask_streams) > 1:
+                                tile_mask_streams.append(full_mask_streams[1])
+                            tile_mask, _ = comfy.utils.pack_latents(tile_mask_streams)
+                        tile_latent_image = None
+                        if full_latent_streams is not None:
+                            tile_latent_streams = [
+                                _crop_spatial_tensor(
+                                    full_latent_streams[0], tile_axis, ax_start, ax_end
+                                )
+                            ]
+                            if len(full_latent_streams) > 1:
+                                tile_latent_streams.append(full_latent_streams[1])
+                            tile_latent_image, _ = comfy.utils.pack_latents(tile_latent_streams)
+                        tile_noise_value = None
+                        if full_noise_streams is not None:
+                            tile_noise_streams = [
+                                _crop_spatial_tensor(
+                                    full_noise_streams[0], tile_axis, ax_start, ax_end
+                                )
+                            ]
+                            if len(full_noise_streams) > 1:
+                                tile_noise_streams.append(full_noise_streams[1])
+                            tile_noise_value, _ = comfy.utils.pack_latents(tile_noise_streams)
                         set_tile_shapes(tile_shapes)
                         tile_payload_restore = install_tile_payloads(
                             tile_shapes, ax_start, ax_end
                         )
+                        saved_latent_image = getattr(model, "latent_image", None)
+                        saved_noise = getattr(model, "noise", None)
+                        tile_extra_args = dict(extra_args)
+                        tile_extra_args["denoise_mask"] = tile_mask
+                        if tile_latent_image is not None:
+                            model.latent_image = tile_latent_image
+                        if tile_noise_value is not None:
+                            model.noise = tile_noise_value
                         try:
-                            tile_pred = model(tile_x, sigma_hat * s_in, **extra_args)
+                            tile_pred = model(
+                                tile_x, sigma_hat * s_in, **tile_extra_args
+                            )
                         finally:
+                            model.latent_image = saved_latent_image
+                            model.noise = saved_noise
                             restore_tile_payloads(tile_payload_restore)
                         pred_streams = comfy.utils.unpack_latents(tile_pred, tile_shapes)
                         pred_video = pred_streams[0].float()
@@ -854,6 +954,13 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                         audio_delta = sigma_a_next - sigma_a
                         if not audio_velocity_is_raw:
                             audio_delta = audio_delta / slope
+                        if full_mask_streams is not None and len(full_mask_streams) > 1:
+                            current_audio_mask = full_mask_streams[1].to(
+                                device=audio_x.device, dtype=audio_x.dtype
+                            )
+                            audio_delta = video_delta + current_audio_mask * (
+                                audio_delta - video_delta
+                            )
                         x_streams = [video_x + dv * video_delta, audio_x + da * audio_delta]
                         x, _ = comfy.utils.pack_latents(x_streams)
                     else:
@@ -874,7 +981,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
         try:
             samples = guider.sample(
                 full_noise, full_nested, sync_sampler, sigmas,
-                denoise_mask=None,
+                denoise_mask=full_denoise_mask,
                 callback=callback,
                 disable_pbar=disable_pbar,
                 seed=noise.seed,
@@ -1044,7 +1151,8 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
     @staticmethod
     def _refine_seams(output, full_video_noise, audio_tensor, full_audio_noise,
                       starts, tile_size, tile_overlap, tile_axis, noise, guider, sampler, sigmas,
-                      refine_steps, device, dtype, keyframe_contexts=None, debug=False):
+                      refine_steps, device, dtype, keyframe_contexts=None,
+                      video_mask=None, audio_mask=None, debug=False):
 
         if refine_steps <= 0 or sigmas.shape[-1] <= 1:
             return output
@@ -1083,6 +1191,10 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
 
             band_nested = _h3_make_nested(band_latent, audio_tensor)
             band_noise_nested = _h3_make_nested(band_noise, full_audio_noise)
+            band_mask = _h3_make_mask(
+                _crop_spatial_tensor(video_mask, tile_axis, band_start, band_end),
+                audio_mask,
+            )
 
             x0_output = {}
             callback = latent_preview.prepare_callback(
@@ -1095,7 +1207,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
             try:
                 band_samples = guider.sample(
                     band_noise_nested, band_nested, sampler, refine_sigmas,
-                    denoise_mask=None,
+                    denoise_mask=band_mask,
                     callback=callback,
                     disable_pbar=disable_pbar,
                     seed=noise.seed,
@@ -1143,7 +1255,8 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
 
     @staticmethod
     def _single_pass(noise, guider, sampler, sigmas, latent_dict,
-                     video_tensor, audio_tensor, fmt_info, debug=False):
+                     video_tensor, audio_tensor, fmt_info,
+                     video_mask=None, audio_mask=None, debug=False):
 
         _GoohaiMinimaxH3TiledSamplerLegacy._clean_minimax_layout(guider, debug)
         keyframe_contexts = _GoohaiMinimaxH3TiledSamplerLegacy._prepare_minimax_keyframes(
@@ -1169,7 +1282,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                 latent_for_sample,
                 sampler,
                 sigmas,
-                denoise_mask=None,
+                denoise_mask=_h3_make_mask(video_mask, audio_mask),
                 callback=callback,
                 disable_pbar=disable_pbar,
                 seed=noise.seed,
