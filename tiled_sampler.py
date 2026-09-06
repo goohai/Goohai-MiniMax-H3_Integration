@@ -1,4 +1,6 @@
 
+import inspect
+
 import torch
 import torch.nn.functional as F
 import comfy.sample
@@ -16,6 +18,23 @@ from comfy.ldm.minimax.model import PackedLayout
 H3_VIDEO_FRAMES = 17
 H3_LATENT_CHANNELS = 24
 H3_LATENT_TIME = 5
+
+def _make_packed_layout(text_len, latent_t, latent_h, latent_w, audio_t,
+                        keyframes=None, refs=None, frame_count=None):
+    kwargs = {"keyframes": keyframes, "refs": refs}
+    try:
+        parameters = inspect.signature(PackedLayout.__init__).parameters
+        supports_extra = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if "frame_count" in parameters or supports_extra:
+            kwargs["frame_count"] = frame_count
+    except (TypeError, ValueError):
+        pass
+    return PackedLayout(
+        text_len, latent_t, latent_h, latent_w, audio_t, **kwargs
+    )
 
 def _resize_keyframe_image(image, target_h, target_w):
 
@@ -723,7 +742,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                     if text_len <= 0:
                         raise RuntimeError("H3 synchronized tiling could not determine text token length")
 
-                    payload["layout"] = PackedLayout(
+                    payload["layout"] = _make_packed_layout(
                         text_len, int(vs[2]), tile_h, tile_w, audio_t,
                         keyframes=keyframes or None,
                         refs=refs or None,
@@ -1210,4 +1229,3 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GoohaiMinimaxH3TiledSampler": "Minimax-H3二采分块采样器 / Minimax-H3 Second-Pass Tiled Sampler",
 }
-
