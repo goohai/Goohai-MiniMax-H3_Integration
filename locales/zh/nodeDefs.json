@@ -71,5 +71,37 @@
       "2": { "name": "视频潜空间" },
       "3": { "name": "音频潜空间" }
     }
+  },
+  "GoohaiMinimaxH3TiledSampler": {
+    "display_name": "Minimax-H3二采分块采样器",
+    "inputs": {
+      "noise": { "name": "噪声" },
+      "guider": { "name": "引导器" },
+      "sampler": { "name": "采样器" },
+      "sigmas": { "name": "Sigmas" },
+      "latent_image": { "name": "AV_Latent" },
+      "enable_tiling": { "name": "启用分块" },
+      "n_tiles": { "name": "分块数量" },
+      "tile_overlap": { "name": "重叠像素" },
+      "refine_seams": { "name": "接缝修复" },
+      "refine_steps": { "name": "修复步数" }
+    },
+    "outputs": {
+      "0": { "name": "输出" },
+      "1": { "name": "降噪输出" }
+    }
+  }
+  ,"GoohaiMinimaxH3LatentUpscalerGH": {
+    "display_name": "Minimax H3 Latent 分块放大 (GH)",
+    "inputs": {
+      "av_latent": { "name": "av_latent" },
+      "model_name": { "name": "放大模型" },
+      "mode": { "name": "放大模式" },
+      "align": { "name": "对齐像素" },
+      "force_unload": { "name": "强制卸载模型" },
+      "device": { "name": "设备" },
+      "precision": { "name": "精度" }
+    },
+    "outputs": { "0": { "name": "AV_Latent" } }
   }
 }

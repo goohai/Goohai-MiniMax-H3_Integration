@@ -318,12 +318,25 @@ def build_conditioning(
         image = resize_image(first_frame[:1], width, height, "center")
         keyframe_images.append(image)
         picture_labels.append("first_frame (exact frame 0)")
-        keyframes.append({"resolved_frame_index": 0, "latent": video_vae.encode(image)})
+        keyframes.append({
+            "resolved_frame_index": 0,
+            "latent": video_vae.encode(image),
+            # Keep the pre-encode image/VAE so a later second-pass upscale can
+            # re-encode at the new target resolution instead of interpolating
+            # an already downsampled latent.
+            "source_image": first_frame[:1].detach().cpu(),
+            "video_vae": video_vae,
+        })
     if last_frame is not None:
         image = resize_image(last_frame[:1], width, height, "center")
         keyframe_images.append(image)
         picture_labels.append(f"last_frame (exact frame {frame_count - 1})")
-        keyframes.append({"resolved_frame_index": frame_count - 1, "latent": video_vae.encode(image)})
+        keyframes.append({
+            "resolved_frame_index": frame_count - 1,
+            "latent": video_vae.encode(image),
+            "source_image": last_frame[:1].detach().cpu(),
+            "video_vae": video_vae,
+        })
 
     real_ref_items: list[dict] = []
     real_ref_blocks: list[dict] = []

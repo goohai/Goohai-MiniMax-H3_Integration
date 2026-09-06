@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import math
+import logging
 import types
 
 import torch
+import torch.nn.functional as F
 
 import comfy.model_sampling
 import comfy.samplers
 import comfy.utils
+import comfy.model_management as model_management
 from comfy.ldm.minimax import model as minimax_model
 from comfy.k_diffusion.sampling import to_d
 
@@ -28,6 +31,80 @@ SCHEDULER_OPTIONS = [
 
 HYBRID_KEYFRAME_SENTINEL = "t8_keyframe_latent"
 HYBRID_LAYOUT_PATCH_VERSION = 1
+KEYFRAME_RESIZE_PATCH_VERSION = 1
+GC_CLEANUP_GUARD_VERSION = 1
+
+
+def _install_gc_cleanup_guard():
+    """Guard ComfyUI 0.33.x cleanup against cleared ``real_model`` weakrefs.
+
+    Dynamic model switching (notably H3 -> latent upscaler -> H3) can leave a
+    LoadedModel whose ``real_model`` has already been cleared. The stock
+    ``cleanup_models_gc`` calls it unconditionally and raises ``NoneType is not
+    callable`` on the first run. Keep this compatibility fix local to GH.
+    """
+    if getattr(model_management.cleanup_models_gc, "_gh_guard_version", None) == GC_CLEANUP_GUARD_VERSION:
+        return
+    def guarded_cleanup():
+        do_gc = False
+        loaded = getattr(model_management, "current_loaded_models", ())
+        stale = []
+        for cur in list(loaded):
+            ref = getattr(cur, "real_model", None)
+            if not callable(ref):
+                # model_unload() in ComfyUI 0.33.x clears real_model but leaves
+                # the LoadedModel entry in current_loaded_models. Remove that
+                # dead entry here; otherwise the next sampler (high_sigmas ->
+                # low_sigmas) can hit the stock cur.real_model() call and fail
+                # on the first run.
+                stale.append(cur)
+                continue
+            try:
+                dead = cur.is_dead()
+            except (TypeError, ReferenceError):
+                dead = False
+            if dead:
+                do_gc = True
+                break
+        if stale:
+            for cur in stale:
+                try:
+                    loaded.remove(cur)
+                except (ValueError, AttributeError):
+                    pass
+        if do_gc:
+            model_management.gc.collect()
+            model_management.soft_empty_cache()
+    guarded_cleanup._gh_guard_version = GC_CLEANUP_GUARD_VERSION
+    model_management.cleanup_models_gc = guarded_cleanup
+
+
+def _release_h3_model_after_sampling(model):
+    """Release only the H3 patcher after a GH sampler invocation.
+
+    This is important for split high/low-sigma workflows: the first sampler
+    must relinquish H3 before the 3D latent upscaler is loaded. The next
+    sampler invocation will let ComfyUI load H3 again on demand.
+    """
+    try:
+        unload = getattr(model_management, "unload_model_and_clones", None)
+        if not callable(unload):
+            unload = getattr(model_management, "unload_model_clones", None)
+        if callable(unload):
+            unload(model)
+        else:
+            detach = getattr(model, "detach", None)
+            if callable(detach):
+                detach()
+    except Exception as exc:
+        # Cleanup must never turn a successful sample into a failed prompt.
+        logging.debug("MiniMax H3 GH post-sample unload skipped: %s", exc)
+    try:
+        empty_cache = getattr(model_management, "soft_empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    except Exception:
+        pass
 
 
 class MiniMaxH3FlowSamplingGH(
@@ -213,6 +290,106 @@ def _patch_hybrid_keyframe_layout(model):
     )
 
 
+def _resize_keyframe_latent(latent, target_h: int, target_w: int):
+    """Resize a T8 keyframe latent to the target video's latent grid.
+
+    The second-pass upscaler changes the target H/W, while the keyframe was
+    encoded at the first-pass size. H3's ``cond`` rows must use the same
+    spatial patch grid as the target video; resize each temporal slice without
+    changing the temporal latent length or channel layout.
+    """
+    if not isinstance(latent, torch.Tensor) or latent.ndim != 5:
+        return latent
+    if latent.shape[-2:] == (target_h, target_w):
+        return latent
+    b, c, t, h, w = latent.shape
+    x = latent.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    x = F.interpolate(x, size=(target_h, target_w), mode="bilinear", align_corners=False)
+    return x.reshape(b, t, c, target_h, target_w).permute(0, 2, 1, 3, 4).contiguous()
+
+
+def _reencode_keyframe(item, target_h: int, target_w: int):
+    """Rebuild a keyframe latent from its original image at target pixel size."""
+    # First pass normally has the same grid as the conditioning latent created
+    # by build_conditioning; reuse it to avoid an unnecessary VAE encode.
+    existing = item.get("latent") if isinstance(item, dict) else None
+    if isinstance(existing, torch.Tensor) and existing.ndim == 5:
+        if tuple(existing.shape[-2:]) == (int(target_h), int(target_w)):
+            return None
+    image = item.get("source_image") if isinstance(item, dict) else None
+    vae = item.get("video_vae") if isinstance(item, dict) else None
+    if not isinstance(image, torch.Tensor) or vae is None or image.ndim != 4:
+        return None
+    pixels_h, pixels_w = int(target_h) * 16, int(target_w) * 16
+    samples = image[..., :3].movedim(-1, 1)
+    samples = comfy.utils.common_upscale(samples, pixels_w, pixels_h, "lanczos", "center")
+    return vae.encode(samples.movedim(1, -1))
+
+
+def _patch_keyframe_conditioning(model):
+    """Make keyframe conditioning follow the current (possibly upscaled) target grid."""
+    original_extra_conds = model.get_model_object("extra_conds")
+    if getattr(original_extra_conds, "_gh_keyframe_resize_patch_version", None) is not None:
+        return
+
+    def _patched_extra_conds(_self, **kwargs):
+        keyframes = kwargs.get("minimax_keyframes")
+        latent_shapes = kwargs.get("latent_shapes")
+        adjusted_keyframes = list(keyframes or [])
+        if keyframes and latent_shapes:
+            try:
+                target_h = int(latent_shapes[0][3])
+                target_w = int(latent_shapes[0][4])
+            except (TypeError, IndexError, ValueError):
+                target_h = target_w = 0
+            if target_h > 0 and target_w > 0:
+                adjusted = []
+                changed = False
+                for item in keyframes:
+                    latent = item.get("latent") if isinstance(item, dict) else None
+                    resized = _reencode_keyframe(item, target_h, target_w)
+                    if resized is None:
+                        resized = _resize_keyframe_latent(latent, target_h, target_w)
+                    if resized is not latent:
+                        changed = True
+                        item = dict(item)
+                        item["latent"] = resized
+                    adjusted.append(item)
+                if changed:
+                    kwargs = dict(kwargs)
+                    kwargs["minimax_keyframes"] = adjusted
+                    adjusted_keyframes = adjusted
+        out = original_extra_conds(**kwargs)
+        # The stock MiniMaxH3.extra_conds may overwrite cond_video_latents from
+        # minimax_refs after processing keyframes. Rebuild the final list in
+        # PackedLayout segment order so cond/ref image rows exactly match the
+        # boolean indexing mask used by the diffusion model.
+        if adjusted_keyframes and isinstance(out, dict):
+            payload_cond = out.get("minimax_payload")
+            payload = getattr(payload_cond, "cond", None) if payload_cond is not None else None
+            layout = payload.get("layout") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and layout is not None:
+                refs = list(kwargs.get("minimax_refs") or [])
+                ref_latents = [r.get("latent") for r in refs if r.get("kind") != HYBRID_KEYFRAME_SENTINEL and r.get("latent") is not None]
+                ordered = []
+                kfi = refi = 0
+                for _, _, kind in layout.segments:
+                    if kind == "cond":
+                        if kfi < len(adjusted_keyframes):
+                            ordered.append(adjusted_keyframes[kfi]["latent"])
+                            kfi += 1
+                    elif kind == "ref_img":
+                        if refi < len(ref_latents):
+                            ordered.append(ref_latents[refi])
+                            refi += 1
+                if ordered:
+                    payload["cond_video_latents"] = ordered
+        return repair_hybrid_keyframe_layout(out, kwargs)
+
+    _patched_extra_conds._gh_keyframe_resize_patch_version = KEYFRAME_RESIZE_PATCH_VERSION
+    model.add_object_patch("extra_conds", types.MethodType(_patched_extra_conds, model.model))
+
+
 def _audio_step_scale(
     sigma_video,
     sigma_audio,
@@ -235,16 +412,18 @@ def sample_minimax_h3_dual_clock_euler_gh(
     callback=None,
     disable=None,
     *,
-    video_values: int,
-    packed_values: int,
+    audio_values: int,
     shift_video: float,
     shift_audio: float,
     audio_velocity_is_raw: bool = False,
 ):
     extra_args = {} if extra_args is None else extra_args
-    if x.shape[-1] != packed_values:
+    packed_values = int(x.shape[-1])
+    video_values = packed_values - int(audio_values)
+    if video_values <= 0:
         raise ValueError(
-            f"MiniMax H3 packed latent changed: expected {packed_values}, got {x.shape[-1]}"
+            f"MiniMax H3 packed latent is too short for its audio stream: "
+            f"packed={packed_values}, audio={audio_values}"
         )
 
     denoise_mask = extra_args.get("denoise_mask")
@@ -306,6 +485,7 @@ def setup_dual_clock_sampling_gh(
     sampler_name: str = DEFAULT_SAMPLER_NAME,
     scheduler: str = DEFAULT_SCHEDULER_NAME,
 ):
+    _install_gc_cleanup_guard()
     video, audio = nested_av_parts(av_latent)
     if video.shape[1] != 24 or audio.shape[1] != 32 or audio.shape[2] != 2:
         raise ValueError(
@@ -324,13 +504,21 @@ def setup_dual_clock_sampling_gh(
 
     # Keep first/last keyframes on the target AV timeline when Hybrid refs are
     # packed before it. This is local to the cloned MODEL returned by GH.
-    _patch_hybrid_keyframe_layout(patched_model)
+    # Keep exact keyframes compatible with second-pass latent upscaling and,
+    # for Hybrid references, apply the timeline offset correction as well.
+    _patch_keyframe_conditioning(patched_model)
 
-    # Scope the compatibility behavior to cloned MODEL outputs that actually
-    # contain locked/remixed audio. Native generated-audio runs keep the exact
-    # current ComfyUI path, and the global MiniMax H3 class stays untouched.
+    # Restore the original GH behavior for locked/remixed source audio.  The
+    # generic FLOW_AV inpaint path can mix noise into the source audio latent
+    # before applying its denoise mask, which breaks lip-sync in lock_source
+    # (and weakens remix_source).  Scope this patch to AV latents that actually
+    # carry a partially/fully locked audio mask so native generated-audio runs
+    # retain the current ComfyUI behavior unchanged.
     if _has_locked_audio_region(av_latent):
-        clean_inpaint = types.MethodType(_clean_locked_latent_inpaint, patched_model.model)
+        clean_inpaint = types.MethodType(
+            _clean_locked_latent_inpaint,
+            patched_model.model,
+        )
         patched_model.add_object_patch("scale_latent_inpaint", clean_inpaint)
 
     transformer_options = patched_model.model_options.get("transformer_options", {}).copy()
@@ -342,26 +530,45 @@ def setup_dual_clock_sampling_gh(
         sampler = comfy.samplers.sampler_object(sampler_name)
     else:
         audio_velocity_is_raw = model_uses_raw_audio_velocity(model)
-        video_values = math.prod(video.shape[1:])
-        packed_values = video_values + math.prod(audio.shape[1:])
+        # Audio length is invariant across the spatial second-pass upscaler.
+        # Derive the video/audio split from the actual packed latent at sample
+        # time so the same GH sampler can process an upscaled video stream.
+        audio_values = math.prod(audio.shape[1:])
 
         def sampler_function(model_wrap, x, sigmas, extra_args=None, callback=None, disable=None):
-            return sample_minimax_h3_dual_clock_euler_gh(
-                model_wrap,
-                x,
-                sigmas,
-                extra_args=extra_args,
-                callback=callback,
-                disable=disable,
-                video_values=video_values,
-                packed_values=packed_values,
-                shift_video=shift_video,
-                shift_audio=shift_audio,
-                audio_velocity_is_raw=audio_velocity_is_raw,
-            )
+            try:
+                return sample_minimax_h3_dual_clock_euler_gh(
+                    model_wrap,
+                    x,
+                    sigmas,
+                    extra_args=extra_args,
+                    callback=callback,
+                    disable=disable,
+                    audio_values=audio_values,
+                    shift_video=shift_video,
+                    shift_audio=shift_audio,
+                    audio_velocity_is_raw=audio_velocity_is_raw,
+                )
+            finally:
+                # Only the truncated first (high-sigma) pass needs an eager
+                # unload before the latent upscaler. A complete pass ending at
+                # sigma 0 must keep the model lifecycle untouched; unloading
+                # there can invalidate ComfyUI's post-sample latent handling.
+                try:
+                    is_truncated_pass = float(sigmas[-1]) > 1e-6
+                except (TypeError, IndexError, ValueError):
+                    is_truncated_pass = False
+                if is_truncated_pass:
+                    _release_h3_model_after_sampling(patched_model)
 
         sampler_function.__name__ = "sample_minimax_h3_dual_clock_euler_gh"
         sampler = comfy.samplers.KSAMPLER(sampler_function)
+        # Metadata consumed by the Goohai second-pass tiled sampler.  It lets
+        # that node run the same dual-clock update while synchronizing tiles.
+        sampler._goohai_dual_clock = True
+        sampler._goohai_shift_video = float(shift_video)
+        sampler._goohai_shift_audio = float(shift_audio)
+        sampler._goohai_audio_velocity_is_raw = bool(audio_velocity_is_raw)
 
     sigmas = _scheduler_sigmas(model_sampling, scheduler, steps, shift_video)
     return patched_model, sampler, sigmas

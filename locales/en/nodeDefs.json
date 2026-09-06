@@ -71,5 +71,37 @@
       "2": { "name": "video latent" },
       "3": { "name": "audio latent" }
     }
+  },
+  "GoohaiMinimaxH3TiledSampler": {
+    "display_name": "Minimax-H3 Second-Pass Tiled Sampler",
+    "inputs": {
+      "noise": { "name": "noise" },
+      "guider": { "name": "guider" },
+      "sampler": { "name": "sampler" },
+      "sigmas": { "name": "Sigmas" },
+      "latent_image": { "name": "AV_Latent" },
+      "enable_tiling": { "name": "Enable Tiling" },
+      "n_tiles": { "name": "Tile Count" },
+      "tile_overlap": { "name": "Overlap Pixels" },
+      "refine_seams": { "name": "Seam Repair" },
+      "refine_steps": { "name": "Repair Steps" }
+    },
+    "outputs": {
+      "0": { "name": "Output" },
+      "1": { "name": "Denoised Output" }
+    }
+  }
+  ,"GoohaiMinimaxH3LatentUpscalerGH": {
+    "display_name": "Minimax H3 Latent Upscaler (GH)",
+    "inputs": {
+      "av_latent": { "name": "AV_Latent" },
+      "model_name": { "name": "Upscale Model" },
+      "mode": { "name": "Upscale Mode" },
+      "align": { "name": "Pixel Alignment" },
+      "force_unload": { "name": "Force Unload Model" },
+      "device": { "name": "Device" },
+      "precision": { "name": "Precision" }
+    },
+    "outputs": { "0": { "name": "AV_Latent" } }
   }
 }

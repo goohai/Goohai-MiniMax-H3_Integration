@@ -14,9 +14,9 @@ from .core import encode_audio_once, nested_av_parts, replace_audio_latent, vali
 
 
 def clean_generated_audio_start(audio: dict) -> dict:
-    """Suppress a short H3 start burst only when a silence gap precedes sustained audio."""
+    """Remove the characteristic truncated-word burst at the start of H3 audio."""
     waveform, sample_rate = validate_audio(audio, "decoded_audio")
-    analysis_samples = min(waveform.shape[-1], round(sample_rate * 0.75))
+    analysis_samples = min(waveform.shape[-1], round(sample_rate * 0.9))
     window_samples = max(1, round(sample_rate * 0.01))
     window_count = analysis_samples // window_samples
     if window_count < 20:
@@ -29,44 +29,64 @@ def clean_generated_audio_start(audio: dict) -> dict:
     if peak < 0.01:
         return audio
 
-    active_threshold = max(0.008, peak * 0.12)
-    silence_threshold = max(0.0025, peak * 0.045)
+    # Generated H3 audio can have a relatively quiet valid onset. Use softer
+    # thresholds than the old detector, then require a strong energy contrast
+    # and a genuine pause so ordinary soft speech is not removed.
+    active_threshold = max(0.004, peak * 0.08)
+    silence_threshold = max(0.0015, peak * 0.07)
     active = rms >= active_threshold
     quiet = rms <= silence_threshold
 
-    initial_limit = min(window_count, 5)  # the burst must begin within 50 ms
+    # The artifact starts at (or essentially at) t=0 and is normally the tail
+    # of a word lasting roughly 80-280 ms. Do not classify a later onset as a
+    # start burst.
+    initial_limit = min(window_count, 3)
     initial_indices = torch.nonzero(active[:initial_limit], as_tuple=False).flatten()
     if initial_indices.numel() == 0:
         return audio
     burst_start = int(initial_indices[0].item())
 
-    # Require at least 40 ms of near-silence after a short burst, which rules
-    # out ordinary speech or music that simply begins at time zero.
-    quiet_run = 4
+    quiet_run = 3
     burst_end = None
-    burst_end_limit = min(window_count - quiet_run, 25)
-    for index in range(burst_start + 2, burst_end_limit + 1):
+    burst_end_limit = min(window_count - quiet_run, 32)
+    for index in range(max(burst_start + 6, 8), burst_end_limit + 1):
         if bool(quiet[index : index + quiet_run].all().item()):
             burst_end = index
             break
-    if burst_end is None or int(active[burst_start:burst_end].sum().item()) < 2:
+    if burst_end is None:
         return audio
 
-    # Find a later, sustained main signal: at least 6 active windows in an
-    # 80-ms interval, beginning after a meaningful silence gap.
-    sustained_windows = 8
+    burst = rms[burst_start:burst_end]
+    burst_active_count = int((burst >= active_threshold).sum().item())
+    if burst_active_count < 5 or burst_active_count > 30:
+        return audio
+
+    # Require an abrupt drop after the initial fragment. This contrast check
+    # is what distinguishes the artifact from a normal quiet lead-in.
+    pause_end = min(window_count, burst_end + 12)
+    pause = rms[burst_end:pause_end]
+    if pause.numel() < 6:
+        return audio
+    burst_level = float(burst.mean().item())
+    pause_level = float(pause.mean().item())
+    if burst_level <= 0.0 or pause_level > burst_level * 0.42:
+        return audio
+
+    # Find the real program onset after a meaningful gap. Allow a gradual
+    # recovery, but require most windows in a 60-100 ms region to be active.
+    sustained_windows = 7
     main_onset = None
-    search_start = burst_end + 6
-    search_end = min(window_count - sustained_windows, 65)
+    search_start = burst_end + 8
+    search_end = min(window_count - sustained_windows, 80)
     for index in range(search_start, search_end + 1):
-        if int(active[index : index + sustained_windows].sum().item()) >= 6:
+        if int(active[index : index + sustained_windows].sum().item()) >= 5:
             main_onset = index
             break
     if main_onset is None:
         return audio
 
     gap = quiet[burst_end:main_onset]
-    if gap.numel() < 6 or float(gap.float().mean().item()) < 0.6:
+    if gap.numel() < 10 or float(gap.float().mean().item()) < 0.55:
         return audio
 
     silence_end_sample = min(waveform.shape[-1], burst_end * window_samples)

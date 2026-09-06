@@ -29,6 +29,8 @@ from .sampling import (
     SCHEDULER_OPTIONS,
     setup_dual_clock_sampling_gh,
 )
+from .tiled_sampler import GoohaiMinimaxH3TiledSampler
+from .latent_upscaler import GoohaiMinimaxH3LatentUpscaler
 
 
 NODE_CATEGORY = "Goohai/MiniMax H3 Integration"
@@ -867,6 +869,8 @@ class MiniMaxH3IntegrationExtension(ComfyExtension):
             MiniMaxH3IntegrationAdapterGH,
             MiniMaxH3DualClockT8GH,
             MiniMaxH3AVDecodeT8GH,
+            GoohaiMinimaxH3TiledSampler,
+            GoohaiMinimaxH3LatentUpscaler,
         ]
 
 
