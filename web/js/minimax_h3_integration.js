@@ -512,6 +512,8 @@ function createPanel(node) {
             prompts: { ...promptByMode },
             height: userHeight,
             advanced: !!advanced?.open,
+            audioModeByMode: { ...audioModeByMode },
+            audioModeAutoByMode: { ...audioModeAutoByMode },
             optimizer: optimizerSettings,
             optimizerCache,
             optimizerBefore,
@@ -1034,8 +1036,15 @@ function nodeColorToCss(value) {
     addAdvanced("strict_prompt_tags", t("Strict prompt tags"), check("strict_prompt_tags"));
     addAdvanced("ref_image_size", t("Reference image size"), select("ref_image_size", ["match", "1.2x", "1.5x", "2x", "max"]));
     const audioModeWidget = widget(node, "audio_mode");
-    const audioModeByMode = {};
-    const audioModeAutoByMode = {};
+    const audioModeByMode = savedState.audioModeByMode && typeof savedState.audioModeByMode === "object"
+        ? { ...savedState.audioModeByMode } : {};
+    const audioModeAutoByMode = savedState.audioModeAutoByMode && typeof savedState.audioModeAutoByMode === "object"
+        ? { ...savedState.audioModeAutoByMode } : {};
+    for (const mode of ["text_keyframes", "all_reference"]) {
+        if (audioModeByMode[mode] != null && audioModeAutoByMode[mode] == null) {
+            audioModeAutoByMode[mode] = false;
+        }
+    }
     let audioStrengthManual = false;
     const driveAudioEntries = () => {
         const videos = [...media.entries()]
@@ -1125,10 +1134,23 @@ function nodeColorToCss(value) {
             && previousAudioCount != null
             && previousAudioCount === allReferenceAudioCount()
         ) return;
-        // Reference-audio add/remove starts a fresh automatic decision; the
-        // user can still override it manually afterwards.
-        audioModeAutoByMode[state.mode] = true;
-        syncAudioModeDefault();
+        const before = Number(previousAudioCount ?? 0);
+        const after = state.mode === "text_keyframes"
+            ? (media.has("hybrid_audio") ? 1 : 0)
+            : allReferenceAudioCount();
+        if (after === 0) {
+            audioModeAutoByMode[state.mode] = true;
+            audioModeByMode[state.mode] = "native";
+            syncAudioModeDefault();
+            return;
+        }
+        // Only the first transition from no reference audio to audio present
+        // gets the automatic original-audio selection. Subsequent uploads,
+        // replacements, and workflow redraws preserve the user's choice.
+        if (before === 0 && after > 0) {
+            audioModeAutoByMode[state.mode] = true;
+            syncAudioModeDefault();
+        }
     };
     const updateAdvancedVisibility = (preserveAudioSettings = false) => {
         if (state.mode === "all_reference") {
@@ -2882,7 +2904,8 @@ function nodeColorToCss(value) {
             sound.title = t(entry.muted ? "Unmute video" : "Mute video");
             sound.onclick = e => {
                 e.stopPropagation();
-                const previousAudioCount = allReferenceAudioCount();
+                const previousAudioCount = state.mode === "text_keyframes"
+                    ? (media.has("hybrid_audio") ? 1 : 0) : allReferenceAudioCount();
                 entry.muted = !entry.muted;
                 syncAudioModeAfterMediaChange(slot, previousAudioCount);
                 refreshPromptMediaPreviews(); persistState(); render();
@@ -2906,7 +2929,8 @@ function nodeColorToCss(value) {
         const remove = make("button", {}, "×"); remove.className = "ghh3-remove"; remove.onclick = e => {
             e.stopPropagation();
             const driveSelection = captureDriveAudioSelection();
-            const previousAudioCount = allReferenceAudioCount();
+            const previousAudioCount = state.mode === "text_keyframes"
+                ? (media.has("hybrid_audio") ? 1 : 0) : allReferenceAudioCount();
             const beforeOrder = promptMediaIdentityOrder();
             const removed = media.get(slot);
             const hasPromptMediaTags = promptMediaMatches(prompt.value).length > 0;
@@ -3040,7 +3064,8 @@ function nodeColorToCss(value) {
             const existing = media.get(slot);
             if (existing && existing.kind !== kind) continue;
             try {
-                const previousAudioCount = allReferenceAudioCount();
+                const previousAudioCount = state.mode === "text_keyframes"
+                    ? (media.has("hybrid_audio") ? 1 : 0) : allReferenceAudioCount();
                 const name = await uploadFile(file);
                 const entry = kind === "audio" ? { name, kind, trimStart: 0, trimEnd: null } : { name, kind };
                 if (existing) changedEntries.push(existing);
@@ -3148,6 +3173,16 @@ function nodeColorToCss(value) {
                 optimizerSettings = restored.optimizer || optimizerSettings;
                 refreshOptimizerName(); refreshPromptConnection();
                 optimizerCache = restored.optimizerCache || null;
+                if (restored.audioModeByMode && typeof restored.audioModeByMode === "object") {
+                    for (const mode of ["text_keyframes", "all_reference"]) {
+                        delete audioModeByMode[mode];
+                        delete audioModeAutoByMode[mode];
+                        if (restored.audioModeByMode[mode] != null) {
+                            audioModeByMode[mode] = restored.audioModeByMode[mode];
+                            audioModeAutoByMode[mode] = restored.audioModeAutoByMode?.[mode] !== false ? true : false;
+                        }
+                    }
+                }
                 const restoredBeforeByMode = restored.optimizerBeforeByMode && typeof restored.optimizerBeforeByMode === "object"
                     ? restored.optimizerBeforeByMode
                     : { [restoredMode]: restored.optimizerBefore ?? null };
@@ -3176,6 +3211,9 @@ function nodeColorToCss(value) {
                 }
                 modeText.classList.toggle("active", state.mode === "text_keyframes");
                 modeRef.classList.toggle("active", state.mode === "all_reference");
+                if (Object.prototype.hasOwnProperty.call(restored, "advanced")) {
+                    advanced.open = !!restored.advanced;
+                }
                 updateAdvancedVisibility();
                 render();
                 syncLayout(userHeight, true);

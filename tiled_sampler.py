@@ -1,6 +1,4 @@
 
-import inspect
-
 import torch
 import torch.nn.functional as F
 import comfy.sample
@@ -21,20 +19,17 @@ H3_LATENT_TIME = 5
 
 def _make_packed_layout(text_len, latent_t, latent_h, latent_w, audio_t,
                         keyframes=None, refs=None, frame_count=None):
+    args = (text_len, latent_t, latent_h, latent_w, audio_t)
     kwargs = {"keyframes": keyframes, "refs": refs}
+    if frame_count is None:
+        return PackedLayout(*args, **kwargs)
     try:
-        parameters = inspect.signature(PackedLayout.__init__).parameters
-        supports_extra = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-        if "frame_count" in parameters or supports_extra:
-            kwargs["frame_count"] = frame_count
-    except (TypeError, ValueError):
-        pass
-    return PackedLayout(
-        text_len, latent_t, latent_h, latent_w, audio_t, **kwargs
-    )
+        return PackedLayout(*args, frame_count=frame_count, **kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword argument" not in message or "frame_count" not in message:
+            raise
+        return PackedLayout(*args, **kwargs)
 
 def _resize_keyframe_image(image, target_h, target_w):
 
@@ -773,7 +768,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                     region = F.pad(region, (0, pad_w, 0, pad_h, 0, 0), mode="replicate")
                 return region
 
-            def install_tile_payloads(tile_shapes, start, end):
+            def install_tile_payloads(tile_shapes, start, end, tile_video_input=None):
                 vs = tile_shapes[0]
                 tile_h = (int(vs[3]) + 1) // 2 * 2
                 tile_w = (int(vs[4]) + 1) // 2 * 2
@@ -785,6 +780,31 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                     for item in list(payload.get("keyframes") or []):
                         copied = dict(item)
                         copied["latent"] = crop_keyframe_latent(item.get("latent"), start, end)
+                        # A tiled second pass can make an exact first-frame
+                        # condition differ abruptly from frame 1 after the
+                        # overlapping tile predictions are merged.  Keep the
+                        # first-frame condition anchored to the incoming
+                        # (upscaled) latent by a small, spatially consistent
+                        # blend.  Last-frame and reference conditions remain
+                        # untouched.
+                        if (
+                            tile_video_input is not None
+                            and int(item.get("resolved_frame_index", -1)) == 0
+                            and isinstance(copied.get("latent"), torch.Tensor)
+                            and copied["latent"].ndim == 5
+                            and isinstance(tile_video_input, torch.Tensor)
+                            and tile_video_input.ndim == 5
+                        ):
+                            kf_latent = copied["latent"]
+                            t = min(int(kf_latent.shape[2]), int(tile_video_input.shape[2]))
+                            if t > 0 and tuple(kf_latent.shape[-2:]) == tuple(tile_video_input.shape[-2:]):
+                                anchor = tile_video_input[:, :, :t].to(
+                                    device=kf_latent.device, dtype=kf_latent.dtype
+                                )
+                                copied["latent"] = kf_latent.clone()
+                                copied["latent"][:, :, :t] = (
+                                    0.85 * kf_latent[:, :, :t] + 0.15 * anchor
+                                )
                         keyframes.append(copied)
                     payload["keyframes"] = keyframes or payload.get("keyframes")
 
@@ -875,12 +895,14 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                                 tile_mask_streams.append(full_mask_streams[1])
                             tile_mask, _ = comfy.utils.pack_latents(tile_mask_streams)
                         tile_latent_image = None
+                        tile_video_latent_image = None
                         if full_latent_streams is not None:
                             tile_latent_streams = [
                                 _crop_spatial_tensor(
                                     full_latent_streams[0], tile_axis, ax_start, ax_end
                                 )
                             ]
+                            tile_video_latent_image = tile_latent_streams[0]
                             if len(full_latent_streams) > 1:
                                 tile_latent_streams.append(full_latent_streams[1])
                             tile_latent_image, _ = comfy.utils.pack_latents(tile_latent_streams)
@@ -896,7 +918,7 @@ class _GoohaiMinimaxH3TiledSamplerLegacy:
                             tile_noise_value, _ = comfy.utils.pack_latents(tile_noise_streams)
                         set_tile_shapes(tile_shapes)
                         tile_payload_restore = install_tile_payloads(
-                            tile_shapes, ax_start, ax_end
+                            tile_shapes, ax_start, ax_end, tile_video_latent_image
                         )
                         saved_latent_image = getattr(model, "latent_image", None)
                         saved_noise = getattr(model, "noise", None)
