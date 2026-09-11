@@ -1442,20 +1442,21 @@ function nodeColorToCss(value) {
     const durationWidget = widget(node, "duration_seconds");
     if (durationWidget) {
         durationWidget.options = durationWidget.options || {};
-        durationWidget.options.precision = 0;
-        durationWidget.options.step = 1;
+        durationWidget.options.precision = 1;
+        durationWidget.options.step = 0.1;
         try {
             Object.defineProperty(durationWidget.options, "step2", {
-                value: 1, writable: true, configurable: true,
+                value: 0.1, writable: true, configurable: true,
             });
         } catch {
-            durationWidget.options.step2 = 1;
+            durationWidget.options.step2 = 0.1;
         }
-        durationWidget.options.round = 1;
+        durationWidget.options.round = 0.1;
         const oldDurationCallback = durationWidget.callback;
         durationWidget.callback = function(value) {
             oldDurationCallback?.call(this, value);
-            this.value = Math.max(2, Math.min(30, Math.round(Number(value) || 2)));
+            const rounded = Math.round(Number(value) * 10) / 10;
+            this.value = Math.max(2, Math.min(30, Number.isFinite(rounded) ? rounded : 2));
             node.setDirtyCanvas(true, true);
         };
     }
