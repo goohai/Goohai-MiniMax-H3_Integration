@@ -62,7 +62,8 @@ The diffusion model remains an external input in the downstream sampler. This pa
 - AV 混合潜空间（`av_latent`，同时包含视频和音频潜空间）；
 - 视频 VAE、音频 VAE；
 - 模型序号（自动切换大模型类型）；
-- 混合音频、条件提示词、媒体映射 JSON 和执行报告。
+- 混合音频、条件提示词、媒体映射 JSON 和执行报告；
+- 总帧数（`length`，按 H3 时间轴 17n+5 对齐的总帧数，int 整数）。
 
 适配器还会输出“原始音频”（内部端口名为 `mux_audio`），可连接到 `VHS_VideoCombine.audio`。
 

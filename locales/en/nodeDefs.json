@@ -38,7 +38,8 @@
       "6": { "name": "is original audio" },
       "7": { "name": "conditioned prompt" },
       "8": { "name": "media map JSON" },
-      "9": { "name": "report" }
+      "9": { "name": "report" },
+      "10": { "name": "total frames" }
     }
   },
   "MiniMaxH3DualClockT8GH": {

@@ -506,12 +506,13 @@ class MiniMaxH3IntegrationGH(io.ComfyNode):
                 ),
                 io.Combo.Input("aspect", options=list(ASPECTS), default="adaptive"),
                 io.Float.Input("megapixels", default=0.5, min=0.2, max=2.0, step=0.1, round=0.1),
-                io.Int.Input(
+                io.Float.Input(
                     "duration_seconds",
                     default=5,
                     min=2,
                     max=30,
-                    step=1,
+                    step=0.1,
+                    round=0.1,
                 ),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True, default="", extra_dict={"hidden": True}),
                 _uploaded_media("first_frame", tooltip="Optional first frame", hidden=True),
@@ -753,6 +754,7 @@ class MiniMaxH3IntegrationAdapterGH(io.ComfyNode):
                 io.Audio.Output("mux_audio"), io.Boolean.Output("is_original_audio"),
                 io.String.Output("conditioned_prompt"),
                 io.String.Output("media_map_json"), io.String.Output("report"),
+                io.Int.Output("length"),
             ],
         )
 
@@ -765,6 +767,7 @@ class MiniMaxH3IntegrationAdapterGH(io.ComfyNode):
             integration["mux_audio"], bool(integration.get("is_original_audio", False)),
             integration["conditioned_prompt"],
             integration["media_map_json"], integration["report"],
+            _coerce_int(integration.get("length"), default=0, minimum=0),
         )
 
 
